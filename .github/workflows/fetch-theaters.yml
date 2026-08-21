@@ -2,10 +2,8 @@ name: Fetch Theater Data
 
 on:
   schedule:
-    # 12:00 AM PHT (00:00 UTC+8) -> 16:00 UTC previous day
-    - cron: '0 16 * * *'
-    # 6:00 AM PHT (06:00 UTC+8) -> 22:00 UTC previous day
-    - cron: '0 22 * * *'
+    # Every Monday at 12:00 AM PHT (00:00 UTC+8) -> 16:00 UTC Sunday
+    - cron: '0 16 * * 0'
   workflow_dispatch:
     inputs:
       run_type:

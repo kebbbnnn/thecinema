@@ -1,15 +1,14 @@
 # 🎬 The Cinema — Data Pipeline
 
-A zero-budget data pipeline running on GitHub Actions that fetches movie theater listings across the Philippines twice daily (12:00 AM and 6:00 AM PHT) and stores them in Cloudflare D1.
+A zero-budget data pipeline running on GitHub Actions that fetches movie theater listings across the Philippines weekly and stores them in Cloudflare D1.
 
 ## 🕒 Schedule & Data Strategy
 
-| Run Time (PHT) | Run Time (UTC) | Mode | Strategy |
+| Schedule | Run Time (PHT) | Run Time (UTC) | Strategy |
 |---|---|---|---|
-| **12:00 AM PHT** | `16:00 UTC` | `initial` | Creates the day's initial snapshot |
-| **6:00 AM PHT** | `22:00 UTC` | `refresh` | Replaces today's snapshot with fresh listings |
+| **Every Monday** | `12:00 AM PHT` | `16:00 UTC Sunday` | Replaces the week's snapshot with fresh listings |
 
-- **Append with Daily Refresh**: Preserves daily snapshots over time for analytics while ensuring the active day's data stays fresh and free of duplicates.
+- **Weekly Snapshots**: Theater listings rarely change, so a single weekly sync keeps data fresh without wasting resources.
 - **Observability**: Every run logs per-location fetch status, theater count, and any error details to `fetch_log`.
 
 ---
