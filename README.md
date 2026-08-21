@@ -64,10 +64,8 @@ CREATE TABLE fetch_log (
 
 ## 🚀 Setup & Cloudflare Configuration
 
-### 1. Install Dependencies
-```bash
-npm install
-```
+### 1. Prerequisites
+Node.js v18+ is required. No `npm install` needed — this repository has zero npm dependencies!
 
 ### 2. Create Cloudflare D1 Database
 Make sure you are logged in to Cloudflare CLI:

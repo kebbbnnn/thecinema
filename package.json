@@ -7,8 +7,8 @@
   "scripts": {
     "fetch-theaters": "node scripts/fetch-theaters.js",
     "fetch-theaters:dry-run": "node scripts/fetch-theaters.js --dry-run",
-    "db:migrate:local": "wrangler d1 migrations apply thecinema-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply thecinema-db --remote"
+    "db:migrate:local": "npx -y wrangler@3 d1 migrations apply thecinema-db --local",
+    "db:migrate:remote": "npx -y wrangler@3 d1 migrations apply thecinema-db --remote"
   },
   "keywords": [
     "cinema",
@@ -18,8 +18,5 @@
     "github-actions"
   ],
   "author": "",
-  "license": "MIT",
-  "devDependencies": {
-    "wrangler": "^3.109.2"
-  }
+  "license": "MIT"
 }
