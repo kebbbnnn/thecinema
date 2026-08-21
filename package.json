@@ -10,7 +10,8 @@
     "fetch-theaters": "node scripts/fetch-theaters.js",
     "fetch-theaters:dry-run": "node scripts/fetch-theaters.js --dry-run",
     "db:migrate:local": "npx -y wrangler@3 d1 migrations apply thecinema-db --local",
-    "db:migrate:remote": "npx -y wrangler@3 d1 migrations apply thecinema-db --remote"
+    "db:migrate:remote": "npx -y wrangler@3 d1 migrations apply thecinema-db --remote",
+    "test": "node scripts/verify-worker.js && node scripts/verify-pipeline.js"
   },
   "keywords": [
     "cinema",

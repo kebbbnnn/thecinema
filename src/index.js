@@ -4,7 +4,22 @@
  * and transforms responses into a movie-centric format.
  */
 
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
 const CACHE_TTL_SECONDS = 3600; // 1 hour
+const UPSTREAM_TIMEOUT_MS = 15000; // 15 seconds
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+// ============================================================================
+// HELPERS
+// ============================================================================
 
 /**
  * Returns today's date in Philippine Time (UTC+8) as YYYY-MM-DD.
@@ -19,24 +34,100 @@ function getTodayPHT() {
 }
 
 /**
- * Validates a date string is in YYYY-MM-DD format.
+ * Validates whether a date string conforms to YYYY-MM-DD format and is valid.
  */
 function isValidDate(dateStr) {
   return /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && !isNaN(Date.parse(dateStr));
 }
 
 /**
- * Parses the URL path to extract the theater slug.
- * Expected: /api/theater/:slug
+ * Constructs a standardized JSON response with CORS headers.
  */
-function parseRoute(url) {
-  const { pathname, searchParams } = new URL(url);
-  const match = pathname.match(/^\/api\/theater\/([a-z0-9-]+)\/?$/);
-  if (!match) return null;
-  return {
-    slug: match[1],
-    date: searchParams.get('date') || getTodayPHT(),
+function jsonResponse(data, status = 200, cacheControl = null) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...CORS_HEADERS,
   };
+  if (cacheControl) {
+    headers['Cache-Control'] = cacheControl;
+  }
+  return new Response(JSON.stringify(data), { status, headers });
+}
+
+/**
+ * Returns a 204 No Content response for CORS preflight OPTIONS requests.
+ */
+function corsPreflightResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+}
+
+/**
+ * Normalizes movie data into a standard movie object with an empty showtimes array.
+ */
+function createMovieEntry(movie = {}) {
+  return {
+    id: movie.movieId || movie.id || null,
+    title: movie.title || 'Unknown',
+    poster: movie.poster || null,
+    mtrcb_rating: movie.mtrcb_rating || null,
+    running_time: movie.running_time || null,
+    in3d: movie.in3d || false,
+    showtimes: [],
+  };
+}
+
+// ============================================================================
+// SERVICES & TRANSFORMS
+// ============================================================================
+
+/**
+ * Fetches movie schedule data from the upstream API.
+ * Returns { ok: true, data } or { ok: false, error, status }.
+ */
+async function fetchUpstreamSchedule(apiBaseUrl, slug, date) {
+  const upstreamUrl = `${apiBaseUrl}/movies/theater/${slug}?date=${date}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+    const upstreamRes = await fetch(upstreamUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'TheCinema-Worker/1.0',
+        Accept: 'application/json',
+      },
+    });
+    clearTimeout(timeoutId);
+
+    if (!upstreamRes.ok) {
+      return {
+        ok: false,
+        status: 502,
+        error: `Upstream returned ${upstreamRes.status}`,
+      };
+    }
+
+    const data = await upstreamRes.json();
+    if (!data || !data.status) {
+      return {
+        ok: false,
+        status: 502,
+        error: 'Upstream returned unsuccessful response',
+      };
+    }
+
+    return { ok: true, data };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Upstream fetch failed: ${err.message}`,
+    };
+  }
 }
 
 /**
@@ -51,31 +142,16 @@ function transformResponse(data, requestedDate) {
   // Build a lookup of movie metadata by movieId
   const movieMap = new Map();
   for (const movie of nowShowing) {
-    movieMap.set(movie.movieId || movie.id, {
-      id: movie.movieId || movie.id,
-      title: movie.title,
-      poster: movie.poster,
-      mtrcb_rating: movie.mtrcb_rating,
-      running_time: movie.running_time,
-      in3d: movie.in3d || false,
-      showtimes: [],
-    });
+    const entry = createMovieEntry(movie);
+    movieMap.set(entry.id, entry);
   }
 
   // Group schedules by movieId
   for (const schedule of schedules) {
     let movie = movieMap.get(schedule.movieId);
     if (!movie) {
-      // Movie in schedule but not in now_showing — create a stub
-      movie = {
-        id: schedule.movieId,
-        title: 'Unknown',
-        poster: null,
-        mtrcb_rating: null,
-        running_time: null,
-        in3d: false,
-        showtimes: [],
-      };
+      // Movie in schedule but not in now_showing — create a fallback entry
+      movie = createMovieEntry({ movieId: schedule.movieId });
       movieMap.set(schedule.movieId, movie);
     }
     movie.showtimes.push({
@@ -102,131 +178,119 @@ function transformResponse(data, requestedDate) {
   };
 }
 
+// ============================================================================
+// ROUTE HANDLERS
+// ============================================================================
+
 /**
- * Returns a JSON response with CORS headers.
+ * Handler for GET /api/theater/:slug?date=YYYY-MM-DD
  */
-function jsonResponse(data, status = 200, cacheControl = null) {
-  const headers = {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
-  if (cacheControl) {
-    headers['Cache-Control'] = cacheControl;
+async function handleTheaterSchedule(request, env, params, searchParams) {
+  const slug = params[0];
+  const date = searchParams.get('date') || getTodayPHT();
+
+  // Validate date parameter
+  if (!isValidDate(date)) {
+    return jsonResponse({ error: `Invalid date format: "${date}". Use YYYY-MM-DD.` }, 400);
   }
-  return new Response(JSON.stringify(data), { status, headers });
+
+  // Check configuration
+  const apiBaseUrl = (env.API_BASE_URL || '').replace(/\/+$/, '');
+  if (!apiBaseUrl) {
+    return jsonResponse({ error: 'Server misconfiguration: API_BASE_URL not set.' }, 500);
+  }
+
+  // Canonical cache key
+  const cacheKeyUrl = new URL(request.url);
+  cacheKeyUrl.search = `?date=${date}`;
+  const cacheKey = new Request(cacheKeyUrl.toString());
+
+  // Check edge cache if available
+  const cache = typeof caches !== 'undefined' && caches ? caches.default : null;
+  if (cache) {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      const headers = new Headers(cachedResponse.headers);
+      headers.set('X-Cache', 'HIT');
+      return new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        headers,
+      });
+    }
+  }
+
+  // Fetch upstream schedule
+  const upstream = await fetchUpstreamSchedule(apiBaseUrl, slug, date);
+  if (!upstream.ok) {
+    return jsonResponse({ error: upstream.error }, upstream.status);
+  }
+
+  // Transform and build cacheable response
+  const transformed = transformResponse(upstream.data, date);
+  const response = jsonResponse(transformed, 200, `public, max-age=${CACHE_TTL_SECONDS}`);
+  response.headers.set('X-Cache', 'MISS');
+
+  // Store in edge cache
+  if (cache) {
+    await cache.put(cacheKey, response.clone());
+  }
+
+  return response;
 }
+
+// ============================================================================
+// ROUTER
+// ============================================================================
+
+const ROUTES = [
+  {
+    pattern: /^\/api\/theater\/([a-z0-9-]+)\/?$/,
+    handler: handleTheaterSchedule,
+  },
+];
+
+/**
+ * Matches a pathname against configured routes.
+ */
+function matchRoute(pathname) {
+  for (const route of ROUTES) {
+    const match = pathname.match(route.pattern);
+    if (match) {
+      return {
+        handler: route.handler,
+        params: match.slice(1),
+      };
+    }
+  }
+  return null;
+}
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
 
 export default {
   async fetch(request, env) {
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-      });
+      return corsPreflightResponse();
     }
 
+    // Only allow GET requests
     if (request.method !== 'GET') {
       return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
-    // Parse route
-    const route = parseRoute(request.url);
-    if (!route) {
-      return jsonResponse({ error: 'Not found. Use GET /api/theater/:slug?date=YYYY-MM-DD' }, 404);
-    }
+    const { pathname, searchParams } = new URL(request.url);
+    const matched = matchRoute(pathname);
 
-    const { slug, date } = route;
-
-    // Validate date
-    if (!isValidDate(date)) {
-      return jsonResponse({ error: `Invalid date format: "${date}". Use YYYY-MM-DD.` }, 400);
-    }
-
-    // Check API_BASE_URL
-    const apiBaseUrl = (env.API_BASE_URL || '').replace(/\/+$/, '');
-    if (!apiBaseUrl) {
-      return jsonResponse({ error: 'Server misconfiguration: API_BASE_URL not set.' }, 500);
-    }
-
-    // Build a canonical cache key URL
-    const cacheKeyUrl = new URL(request.url);
-    cacheKeyUrl.search = `?date=${date}`;
-    const cacheKey = new Request(cacheKeyUrl.toString());
-
-    // Check cache (if Cache API is available in environment)
-    const cache = typeof caches !== 'undefined' && caches ? caches.default : null;
-    if (cache) {
-      const cachedResponse = await cache.match(cacheKey);
-      if (cachedResponse) {
-        // Clone and add cache hit header
-        const headers = new Headers(cachedResponse.headers);
-        headers.set('X-Cache', 'HIT');
-        return new Response(cachedResponse.body, {
-          status: cachedResponse.status,
-          headers,
-        });
-      }
-    }
-
-    // Fetch from upstream
-    const upstreamUrl = `${apiBaseUrl}/movies/theater/${slug}?date=${date}`;
-    let upstreamData;
-
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const upstreamRes = await fetch(upstreamUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'TheCinema-Worker/1.0',
-          Accept: 'application/json',
-        },
-      });
-      clearTimeout(timeoutId);
-
-      if (!upstreamRes.ok) {
-        return jsonResponse(
-          { error: `Upstream returned ${upstreamRes.status}` },
-          502
-        );
-      }
-
-      upstreamData = await upstreamRes.json();
-    } catch (err) {
+    if (!matched) {
       return jsonResponse(
-        { error: `Upstream fetch failed: ${err.message}` },
-        502
+        { error: 'Not found. Use GET /api/theater/:slug?date=YYYY-MM-DD' },
+        404
       );
     }
 
-    if (!upstreamData.status) {
-      return jsonResponse(
-        { error: 'Upstream returned unsuccessful response' },
-        502
-      );
-    }
-
-    // Transform response
-    const transformed = transformResponse(upstreamData, date);
-
-    // Build cacheable response
-    const response = jsonResponse(transformed, 200, `public, max-age=${CACHE_TTL_SECONDS}`);
-    response.headers.set('X-Cache', 'MISS');
-
-    // Store in cache (if available)
-    if (cache) {
-      const responseToCache = response.clone();
-      await cache.put(cacheKey, responseToCache);
-    }
-
-    return response;
+    return matched.handler(request, env, matched.params, searchParams);
   },
 };

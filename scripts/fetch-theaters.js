@@ -11,6 +11,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const CONCURRENCY_LIMIT = 5;
+const UPSTREAM_TIMEOUT_MS = 15000;
+const DEFAULT_DB_NAME = 'thecinema-db';
+
 // 55 Locations: 40 Provinces + 15 Cities
 const PROVINCES = [
   // 40 Provinces
@@ -73,19 +81,21 @@ const PROVINCES = [
   'valenzuela',
 ];
 
-const CONCURRENCY_LIMIT = 5;
+// ============================================================================
+// HELPERS
+// ============================================================================
 
 /**
- * Computes the date and run type based on Philippine Standard Time (UTC+8).
+ * Computes snapshot date and run type based on Philippine Standard Time (UTC+8).
  */
-function getPHTInfo(date = new Date()) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+function getSnapshotContext(date = new Date()) {
+  const dateFormatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   });
-  const snapshotDate = formatter.format(date); // Format: YYYY-MM-DD
+  const snapshotDate = dateFormatter.format(date); // Format: YYYY-MM-DD
 
   const hourFormatter = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Manila',
@@ -116,7 +126,7 @@ function sqlEscape(val) {
 }
 
 /**
- * Helper to limit concurrent asynchronous tasks.
+ * Executes async tasks over an array with bounded concurrency.
  */
 async function mapConcurrent(items, limit, fn) {
   const results = new Array(items.length);
@@ -147,6 +157,54 @@ async function mapConcurrent(items, limit, fn) {
 }
 
 /**
+ * Parses CLI arguments and environment variables into runtime config.
+ */
+function parseCliArgs() {
+  const args = process.argv.slice(2);
+  return {
+    isDryRun: args.includes('--dry-run') || process.env.DRY_RUN === 'true',
+    isLocal: args.includes('--local') || process.env.USE_LOCAL_DB === 'true',
+    dbName: process.env.D1_DATABASE_NAME || DEFAULT_DB_NAME,
+  };
+}
+
+/**
+ * Prints startup information banner.
+ */
+function logBanner(config, context) {
+  console.log('='.repeat(60));
+  console.log(`🎬 The Cinema — D1 Pipeline`);
+  console.log(`📅 Snapshot Date (PHT): ${context.snapshotDate}`);
+  console.log(`⏰ Current PHT Hour:     ${context.phtHour}:00`);
+  console.log(`🔄 Run Type:             ${context.runType.toUpperCase()}`);
+  console.log(`🎯 Target DB:            ${config.dbName} (${config.isLocal ? 'local' : 'remote'})`);
+  console.log(`🧪 Mode:                 ${config.isDryRun ? 'DRY-RUN (no DB write)' : 'LIVE'}`);
+  console.log(`📍 Total Locations:      ${PROVINCES.length}`);
+  console.log('='.repeat(60));
+}
+
+/**
+ * Prints summary of fetch results.
+ */
+function logFetchSummary(results, durationSec) {
+  const successful = results.filter((r) => r.success);
+  const failed = results.filter((r) => !r.success);
+  const totalTheaters = successful.reduce((acc, r) => acc + r.theaters.length, 0);
+
+  console.log('\n' + '-'.repeat(60));
+  console.log(`📊 Fetch Summary:`);
+  console.log(`   - Successful:    ${successful.length}/${PROVINCES.length} locations`);
+  console.log(`   - Failed:        ${failed.length}/${PROVINCES.length} locations`);
+  console.log(`   - Total Theaters: ${totalTheaters}`);
+  console.log(`   - Time Taken:    ${durationSec}s`);
+  console.log('-'.repeat(60));
+}
+
+// ============================================================================
+// PHASE 1: FETCH
+// ============================================================================
+
+/**
  * Fetches movie theater data for a single province/city with retries.
  */
 async function fetchProvince(slug, retries = 3) {
@@ -159,7 +217,7 @@ async function fetchProvince(slug, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
       const res = await fetch(url, {
         signal: controller.signal,
@@ -196,30 +254,13 @@ async function fetchProvince(slug, retries = 3) {
 }
 
 /**
- * Main execution function.
+ * Fetches all provinces with bounded concurrency and logs progress.
  */
-async function main() {
-  const args = process.argv.slice(2);
-  const isDryRun = args.includes('--dry-run') || process.env.DRY_RUN === 'true';
-  const isLocal = args.includes('--local') || process.env.USE_LOCAL_DB === 'true';
-  const dbName = process.env.D1_DATABASE_NAME || 'thecinema-db';
-
-  const { snapshotDate, phtHour, runType } = getPHTInfo();
-
-  console.log('='.repeat(60));
-  console.log(`🎬 The Cinema — D1 Pipeline`);
-  console.log(`📅 Snapshot Date (PHT): ${snapshotDate}`);
-  console.log(`⏰ Current PHT Hour:     ${phtHour}:00`);
-  console.log(`🔄 Run Type:             ${runType.toUpperCase()}`);
-  console.log(`🎯 Target DB:            ${dbName} (${isLocal ? 'local' : 'remote'})`);
-  console.log(`🧪 Mode:                 ${isDryRun ? 'DRY-RUN (no DB write)' : 'LIVE'}`);
-  console.log(`📍 Total Locations:      ${PROVINCES.length}`);
-  console.log('='.repeat(60));
-
-  console.log(`\n⏳ Fetching data from API (concurrency: ${CONCURRENCY_LIMIT})...`);
+async function fetchAllProvinces(provinces, concurrency) {
+  console.log(`\n⏳ Fetching data from API (concurrency: ${concurrency})...`);
   const startTime = Date.now();
 
-  const results = await mapConcurrent(PROVINCES, CONCURRENCY_LIMIT, async (slug) => {
+  const results = await mapConcurrent(provinces, concurrency, async (slug) => {
     const res = await fetchProvince(slug);
     const count = res.theaters ? res.theaters.length : 0;
     if (res.success) {
@@ -231,30 +272,64 @@ async function main() {
   });
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
-  const successful = results.filter((r) => r.success);
-  const failed = results.filter((r) => !r.success);
-  const totalTheaters = successful.reduce((acc, r) => acc + r.theaters.length, 0);
+  return { results, durationSec };
+}
 
-  console.log('\n' + '-'.repeat(60));
-  console.log(`📊 Fetch Summary:`);
-  console.log(`   - Successful:    ${successful.length}/${PROVINCES.length} locations`);
-  console.log(`   - Failed:        ${failed.length}/${PROVINCES.length} locations`);
-  console.log(`   - Total Theaters: ${totalTheaters}`);
-  console.log(`   - Time Taken:    ${durationSec}s`);
-  console.log('-'.repeat(60));
+// ============================================================================
+// PHASE 2: BUILD SQL
+// ============================================================================
 
-  if (successful.length === 0) {
-    console.error('❌ All province fetches failed. Aborting database write.');
-    process.exit(1);
-  }
+/**
+ * Generates an INSERT statement for a single theater snapshot.
+ */
+function buildSnapshotInsert(snapshotDate, slug, locationName, theater) {
+  const logo = theater.logo_url || theater.logo || theater.branch_logo || null;
+  const buyTicket = theater.buy_ticket ? 1 : 0;
+  const provinceDisplay = theater.province || locationName || slug;
 
-  // Build SQL statements
+  return (
+    `INSERT INTO theater_snapshots (` +
+    `snapshot_date, province_slug, theater_id, theater_type, slug, branch_id, name, ` +
+    `address1, address2, city, logo_url, longitude, latitude, buy_ticket, mall_group_id, province` +
+    `) VALUES (` +
+    `${sqlEscape(snapshotDate)}, ${sqlEscape(slug)}, ${sqlEscape(theater.id)}, ${sqlEscape(theater.theater_type)}, ` +
+    `${sqlEscape(theater.slug)}, ${sqlEscape(theater.branch_id)}, ${sqlEscape(theater.name)}, ${sqlEscape(theater.address1)}, ` +
+    `${sqlEscape(theater.address2)}, ${sqlEscape(theater.city)}, ${sqlEscape(logo)}, ${sqlEscape(theater.longitude)}, ` +
+    `${sqlEscape(theater.latitude)}, ${buyTicket}, ${sqlEscape(theater.mall_group_id)}, ${sqlEscape(provinceDisplay)}` +
+    `);`
+  );
+}
+
+/**
+ * Generates an INSERT statement for a fetch log entry.
+ */
+function buildFetchLogInsert(snapshotDate, runType, result) {
+  const { slug, success, locationName, theaters, error } = result;
+  const status = success ? 'success' : 'error';
+  const count = success ? (theaters ? theaters.length : 0) : 0;
+  const errorVal = success ? null : error;
+  const locName = locationName || slug;
+
+  return (
+    `INSERT INTO fetch_log (` +
+    `snapshot_date, run_type, province_slug, location_name, theater_count, status, error_message` +
+    `) VALUES (` +
+    `${sqlEscape(snapshotDate)}, ${sqlEscape(runType)}, ${sqlEscape(slug)}, ` +
+    `${sqlEscape(locName)}, ${count}, ${sqlEscape(status)}, ${sqlEscape(errorVal)}` +
+    `);`
+  );
+}
+
+/**
+ * Builds the complete list of SQL statements for all results.
+ */
+function buildSqlStatements(results, snapshotDate, runType) {
   const statements = [];
 
   for (const result of results) {
-    const { slug, success, locationName, theaters, error } = result;
+    const { slug, success, locationName, theaters } = result;
 
-    // For 'refresh' runs (e.g. 6:00 AM PHT), replace existing entries for today + province
+    // For 'refresh' runs, clear existing snapshots for this date and province first
     if (runType === 'refresh') {
       statements.push(
         `DELETE FROM theater_snapshots WHERE snapshot_date = ${sqlEscape(snapshotDate)} AND province_slug = ${sqlEscape(slug)};`
@@ -262,61 +337,32 @@ async function main() {
     }
 
     if (success) {
-      for (const t of theaters) {
-        const logo = t.logo_url || t.logo || t.branch_logo || null;
-        const buyTicket = t.buy_ticket ? 1 : 0;
-        const provinceDisplay = t.province || locationName || slug;
-
-        statements.push(
-          `INSERT INTO theater_snapshots (` +
-            `snapshot_date, province_slug, theater_id, theater_type, slug, branch_id, name, ` +
-            `address1, address2, city, logo_url, longitude, latitude, buy_ticket, mall_group_id, province` +
-          `) VALUES (` +
-            `${sqlEscape(snapshotDate)}, ${sqlEscape(slug)}, ${sqlEscape(t.id)}, ${sqlEscape(t.theater_type)}, ` +
-            `${sqlEscape(t.slug)}, ${sqlEscape(t.branch_id)}, ${sqlEscape(t.name)}, ${sqlEscape(t.address1)}, ` +
-            `${sqlEscape(t.address2)}, ${sqlEscape(t.city)}, ${sqlEscape(logo)}, ${sqlEscape(t.longitude)}, ` +
-            `${sqlEscape(t.latitude)}, ${buyTicket}, ${sqlEscape(t.mall_group_id)}, ${sqlEscape(provinceDisplay)}` +
-          `);`
-        );
+      for (const theater of theaters) {
+        statements.push(buildSnapshotInsert(snapshotDate, slug, locationName, theater));
       }
-
-      statements.push(
-        `INSERT INTO fetch_log (` +
-          `snapshot_date, run_type, province_slug, location_name, theater_count, status, error_message` +
-        `) VALUES (` +
-          `${sqlEscape(snapshotDate)}, ${sqlEscape(runType)}, ${sqlEscape(slug)}, ` +
-          `${sqlEscape(locationName)}, ${theaters.length}, 'success', NULL` +
-        `);`
-      );
-    } else {
-      statements.push(
-        `INSERT INTO fetch_log (` +
-          `snapshot_date, run_type, province_slug, location_name, theater_count, status, error_message` +
-        `) VALUES (` +
-          `${sqlEscape(snapshotDate)}, ${sqlEscape(runType)}, ${sqlEscape(slug)}, ` +
-          `${sqlEscape(locationName || slug)}, 0, 'error', ${sqlEscape(error)}` +
-        `);`
-      );
     }
+
+    statements.push(buildFetchLogInsert(snapshotDate, runType, result));
   }
 
-  const sqlContent = statements.join('\n');
+  return statements;
+}
 
-  if (isDryRun) {
-    console.log(`\n🧪 DRY-RUN: Generated ${statements.length} SQL statement(s).`);
-    console.log(`Sample statement:\n${statements.slice(0, 3).join('\n')}\n...`);
-    console.log('\n✅ Dry run completed successfully.');
-    return;
-  }
+// ============================================================================
+// PHASE 3: PERSIST
+// ============================================================================
 
-  // Write SQL statements to a temporary file
+/**
+ * Writes SQL statements to a temp file and applies them to Cloudflare D1 via Wrangler.
+ */
+function persistToD1(sqlContent, dbName, isLocal) {
   const tempFilePath = path.join(os.tmpdir(), `thecinema_batch_${Date.now()}.sql`);
   fs.writeFileSync(tempFilePath, sqlContent, 'utf-8');
 
-  console.log(`\n💾 Executing ${statements.length} statements on D1 (${isLocal ? '--local' : '--remote'})...`);
+  const targetFlag = isLocal ? '--local' : '--remote';
+  console.log(`\n💾 Executing statements on D1 (${targetFlag})...`);
 
   try {
-    const targetFlag = isLocal ? '--local' : '--remote';
     execFileSync('npx', ['wrangler', 'd1', 'execute', dbName, targetFlag, `--file=${tempFilePath}`], {
       stdio: 'inherit',
       env: process.env,
@@ -330,6 +376,36 @@ async function main() {
       fs.unlinkSync(tempFilePath);
     }
   }
+}
+
+// ============================================================================
+// MAIN PIPELINE
+// ============================================================================
+
+async function main() {
+  const config = parseCliArgs();
+  const context = getSnapshotContext();
+  logBanner(config, context);
+
+  const { results, durationSec } = await fetchAllProvinces(PROVINCES, CONCURRENCY_LIMIT);
+  logFetchSummary(results, durationSec);
+
+  const hasSuccessful = results.some((r) => r.success);
+  if (!hasSuccessful) {
+    console.error('❌ All province fetches failed. Aborting database write.');
+    process.exit(1);
+  }
+
+  const statements = buildSqlStatements(results, context.snapshotDate, context.runType);
+
+  if (config.isDryRun) {
+    console.log(`\n🧪 DRY-RUN: Generated ${statements.length} SQL statement(s).`);
+    console.log(`Sample statement:\n${statements.slice(0, 3).join('\n')}\n...`);
+    console.log('\n✅ Dry run completed successfully.');
+    return;
+  }
+
+  persistToD1(statements.join('\n'), config.dbName, config.isLocal);
 }
 
 main().catch((err) => {
