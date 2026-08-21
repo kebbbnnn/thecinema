@@ -118,6 +118,87 @@ node scripts/fetch-theaters.js --local
 
 ---
 
+---
+
+## ⚡ Movie Schedule Proxy Worker
+
+A Cloudflare Worker that proxies the upstream movie schedule API, caches responses at the edge (1-hour TTL), and transforms showtimes into a movie-centric format.
+
+### Endpoint
+
+```http
+GET /api/theater/:slug?date=YYYY-MM-DD
+```
+
+- `:slug` — Theater slug (e.g. `kcc-mall-of-gensan`, `ayala-center-cebu`)
+- `date` *(optional)* — Date in `YYYY-MM-DD` format. Defaults to today in Philippine Time (UTC+8).
+
+### Transformed Response Format
+
+```json
+{
+  "theater": {
+    "id": 342,
+    "name": "KCC Mall of Gensan",
+    "slug": "kcc-mall-of-gensan",
+    "city": "General Santos City",
+    "address": "Jose Catolico Sr. Ave., Brgy. Lagao",
+    "latitude": "125.186...",
+    "longitude": "6.116...",
+    "screens": 6
+  },
+  "date": "2026-08-21",
+  "available_schedule": [
+    "2026-08-21",
+    "2026-08-22",
+    "2026-08-23",
+    "2026-08-24",
+    "2026-08-25"
+  ],
+  "movies": [
+    {
+      "id": 21138,
+      "title": "Insidious: Out of the Further",
+      "poster": "https://cdn1.clickthecity.com/images/movies/poster/21138_6.jpg",
+      "mtrcb_rating": "R-13",
+      "running_time": "1 hr 45 min",
+      "in3d": false,
+      "showtimes": [
+        {
+          "screen": "Cinema 1",
+          "screen_slug": "kcc-mall-of-gensan-cinema-1",
+          "times": ["11:00 AM", "1:30 PM", "4:00 PM", "6:30 PM", "9:00 PM"]
+        },
+        {
+          "screen": "Cinema 3",
+          "screen_slug": "kcc-mall-of-gensan-cinema-3",
+          "times": ["10:10 AM", "12:30 PM", "3:00 PM", "5:30 PM", "9:00 PM"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Worker Deployment & Setup
+
+1. **Set the upstream API secret in Cloudflare**:
+   ```bash
+   npx wrangler secret put API_BASE_URL
+   ```
+
+2. **Run locally**:
+   ```bash
+   npm run dev
+   ```
+
+3. **Deploy to Cloudflare Workers**:
+   ```bash
+   npm run deploy
+   ```
+
+---
+
 ## 📍 Covered Locations (55 Total)
 
 ### 40 Provinces:

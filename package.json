@@ -5,6 +5,8 @@
   "description": "Daily pipeline to fetch movie theater data and store in Cloudflare D1",
   "main": "scripts/fetch-theaters.js",
   "scripts": {
+    "dev": "npx -y wrangler@3 dev",
+    "deploy": "npx -y wrangler@3 deploy",
     "fetch-theaters": "node scripts/fetch-theaters.js",
     "fetch-theaters:dry-run": "node scripts/fetch-theaters.js --dry-run",
     "db:migrate:local": "npx -y wrangler@3 d1 migrations apply thecinema-db --local",
