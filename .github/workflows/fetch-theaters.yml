@@ -50,5 +50,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME || 'thecinema-db' }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
           RUN_TYPE: ${{ inputs.run_type }}
           DRY_RUN: ${{ inputs.dry_run }}

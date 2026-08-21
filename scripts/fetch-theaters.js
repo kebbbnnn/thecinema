@@ -150,7 +150,8 @@ async function mapConcurrent(items, limit, fn) {
  * Fetches movie theater data for a single province/city with retries.
  */
 async function fetchProvince(slug, retries = 3) {
-  const url = `https://www.clickthecity.com/api/movies/province/${slug}`;
+  const baseUrl = (process.env.API_BASE_URL || 'https://www.clickthecity.com/api').replace(/\/+$/, '');
+  const url = `${baseUrl}/movies/province/${slug}`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -212,7 +213,7 @@ async function main() {
   console.log(`📍 Total Locations:      ${PROVINCES.length}`);
   console.log('='.repeat(60));
 
-  console.log(`\n⏳ Fetching data from ClickTheCity API (concurrency: ${CONCURRENCY_LIMIT})...`);
+  console.log(`\n⏳ Fetching data from API (concurrency: ${CONCURRENCY_LIMIT})...`);
   const startTime = Date.now();
 
   const results = await mapConcurrent(PROVINCES, CONCURRENCY_LIMIT, async (slug) => {

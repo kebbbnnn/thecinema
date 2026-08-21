@@ -1,6 +1,7 @@
 {
   "name": "thecinema",
   "version": "1.0.0",
+  "type": "module",
   "description": "Daily pipeline to fetch ClickTheCity movie theater data and store in Cloudflare D1",
   "main": "scripts/fetch-theaters.js",
   "scripts": {

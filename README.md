@@ -93,6 +93,7 @@ In your GitHub repository, go to **Settings > Secrets and variables > Actions** 
 
 | Secret Name | Description | Where to find |
 |---|---|---|
+| `API_BASE_URL` | Base API URL e.g. `https://www.clickthecity.com/api` | Secret / API provider URL |
 | `CLOUDFLARE_API_TOKEN` | API Token with **D1 Edit** permissions | Cloudflare Dashboard > My Profile > API Tokens |
 | `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID | Cloudflare Dashboard URL or Worker overview |
 | `D1_DATABASE_NAME` | D1 database name (optional, defaults to `thecinema-db`) | Your wrangler.toml / D1 dashboard |
