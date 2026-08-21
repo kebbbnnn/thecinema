@@ -19,9 +19,8 @@ const CONCURRENCY_LIMIT = 5;
 const UPSTREAM_TIMEOUT_MS = 15000;
 const DEFAULT_DB_NAME = 'thecinema-db';
 
-// 55 Locations: 40 Provinces + 15 Cities
+// 55 Locations: 40 Provinces + 15 Metro Manila Cities
 const PROVINCES = [
-  // 40 Provinces
   'agusan-del-norte',
   'aklan',
   'albay',
@@ -62,8 +61,9 @@ const PROVINCES = [
   'tarlac',
   'zambales',
   'zamboanga-del-sur',
+];
 
-  // 15 Cities
+const METRO_MANILA_CITIES = [
   'caloocan',
   'las-pinas',
   'makati',
@@ -79,6 +79,11 @@ const PROVINCES = [
   'san-juan',
   'taguig',
   'valenzuela',
+];
+
+const LOCATIONS = [
+  ...PROVINCES.map((slug) => ({ slug, type: 'province' })),
+  ...METRO_MANILA_CITIES.map((slug) => ({ slug, type: 'metro-manila' })),
 ];
 
 // ============================================================================
@@ -179,7 +184,7 @@ function logBanner(config, context) {
   console.log(`🔄 Run Type:             ${context.runType.toUpperCase()}`);
   console.log(`🎯 Target DB:            ${config.dbName} (${config.isLocal ? 'local' : 'remote'})`);
   console.log(`🧪 Mode:                 ${config.isDryRun ? 'DRY-RUN (no DB write)' : 'LIVE'}`);
-  console.log(`📍 Total Locations:      ${PROVINCES.length}`);
+  console.log(`📍 Total Locations:      ${LOCATIONS.length}`);
   console.log('='.repeat(60));
 }
 
@@ -193,8 +198,8 @@ function logFetchSummary(results, durationSec) {
 
   console.log('\n' + '-'.repeat(60));
   console.log(`📊 Fetch Summary:`);
-  console.log(`   - Successful:    ${successful.length}/${PROVINCES.length} locations`);
-  console.log(`   - Failed:        ${failed.length}/${PROVINCES.length} locations`);
+  console.log(`   - Successful:    ${successful.length}/${LOCATIONS.length} locations`);
+  console.log(`   - Failed:        ${failed.length}/${LOCATIONS.length} locations`);
   console.log(`   - Total Theaters: ${totalTheaters}`);
   console.log(`   - Time Taken:    ${durationSec}s`);
   console.log('-'.repeat(60));
@@ -205,14 +210,16 @@ function logFetchSummary(results, durationSec) {
 // ============================================================================
 
 /**
- * Fetches movie theater data for a single province/city with retries.
+ * Fetches movie theater data for a single province or Metro Manila city with retries.
  */
-async function fetchProvince(slug, retries = 3) {
+async function fetchLocation(location, retries = 3) {
+  const { slug, type } = location;
   const baseUrl = (process.env.API_BASE_URL || '').replace(/\/+$/, '');
   if (!baseUrl) {
     throw new Error('API_BASE_URL environment variable is required.');
   }
-  const url = `${baseUrl}/movies/province/${slug}`;
+  const endpoint = type === 'metro-manila' ? 'metro-manila' : 'province';
+  const url = `${baseUrl}/movies/${endpoint}/${slug}`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -235,6 +242,7 @@ async function fetchProvince(slug, retries = 3) {
       const data = await res.json();
       return {
         slug,
+        type,
         success: true,
         locationName: data.location_name || slug,
         theaters: Array.isArray(data.theaters) ? data.theaters : [],
@@ -243,6 +251,7 @@ async function fetchProvince(slug, retries = 3) {
       if (attempt === retries) {
         return {
           slug,
+          type,
           success: false,
           error: err.message || String(err),
           theaters: [],
@@ -254,19 +263,19 @@ async function fetchProvince(slug, retries = 3) {
 }
 
 /**
- * Fetches all provinces with bounded concurrency and logs progress.
+ * Fetches all locations with bounded concurrency and logs progress.
  */
-async function fetchAllProvinces(provinces, concurrency) {
+async function fetchAllLocations(locations, concurrency) {
   console.log(`\n⏳ Fetching data from API (concurrency: ${concurrency})...`);
   const startTime = Date.now();
 
-  const results = await mapConcurrent(provinces, concurrency, async (slug) => {
-    const res = await fetchProvince(slug);
+  const results = await mapConcurrent(locations, concurrency, async (location) => {
+    const res = await fetchLocation(location);
     const count = res.theaters ? res.theaters.length : 0;
     if (res.success) {
-      console.log(`  ✓ [${slug}] ${res.locationName}: ${count} theater(s)`);
+      console.log(`  ✓ [${res.slug}] ${res.locationName} (${res.type}): ${count} theater(s)`);
     } else {
-      console.error(`  ✗ [${slug}] FAILED: ${res.error}`);
+      console.error(`  ✗ [${res.slug}] FAILED (${location.type}): ${res.error}`);
     }
     return res;
   });
@@ -387,12 +396,12 @@ async function main() {
   const context = getSnapshotContext();
   logBanner(config, context);
 
-  const { results, durationSec } = await fetchAllProvinces(PROVINCES, CONCURRENCY_LIMIT);
+  const { results, durationSec } = await fetchAllLocations(LOCATIONS, CONCURRENCY_LIMIT);
   logFetchSummary(results, durationSec);
 
   const hasSuccessful = results.some((r) => r.success);
   if (!hasSuccessful) {
-    console.error('❌ All province fetches failed. Aborting database write.');
+    console.error('❌ All location fetches failed. Aborting database write.');
     process.exit(1);
   }
 
