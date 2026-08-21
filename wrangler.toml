@@ -1,6 +1,7 @@
 name = "thecinema"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
+workers_dev = true
 
 [[d1_databases]]
 binding = "DB"
