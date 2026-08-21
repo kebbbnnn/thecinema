@@ -1,6 +1,6 @@
 # 🎬 The Cinema — Data Pipeline
 
-A zero-budget data pipeline running on GitHub Actions that fetches movie theater listings across the Philippines from ClickTheCity's API twice daily (12:00 AM and 6:00 AM PHT) and stores them in Cloudflare D1.
+A zero-budget data pipeline running on GitHub Actions that fetches movie theater listings across the Philippines twice daily (12:00 AM and 6:00 AM PHT) and stores them in Cloudflare D1.
 
 ## 🕒 Schedule & Data Strategy
 
@@ -24,7 +24,7 @@ CREATE TABLE theater_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snapshot_date TEXT NOT NULL,         -- 'YYYY-MM-DD' in Philippine Time (UTC+8)
   province_slug TEXT NOT NULL,         -- e.g. 'cebu', 'quezon-city'
-  theater_id INTEGER NOT NULL,         -- ID from ClickTheCity API
+  theater_id INTEGER NOT NULL,         -- ID from API
   theater_type TEXT,                   -- e.g. 'TM'
   slug TEXT,                           -- e.g. 'ayala-center-cebu'
   branch_id TEXT,                      -- e.g. '7401'
@@ -93,7 +93,7 @@ In your GitHub repository, go to **Settings > Secrets and variables > Actions** 
 
 | Secret Name | Description | Where to find |
 |---|---|---|
-| `API_BASE_URL` | Base API URL e.g. `https://www.clickthecity.com/api` | Secret / API provider URL |
+| `API_BASE_URL` | Base API endpoint URL | Secret / API provider URL |
 | `CLOUDFLARE_API_TOKEN` | API Token with **D1 Edit** permissions | Cloudflare Dashboard > My Profile > API Tokens |
 | `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID | Cloudflare Dashboard URL or Worker overview |
 | `D1_DATABASE_NAME` | D1 database name (optional, defaults to `thecinema-db`) | Your wrangler.toml / D1 dashboard |

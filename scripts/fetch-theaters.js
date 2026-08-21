@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * ClickTheCity Theater Data Pipeline
+ * The Cinema — Theater Data Pipeline
  * Fetches movie theater data for all Philippine provinces/cities
  * and stores snapshots + fetch logs in Cloudflare D1.
  */
@@ -150,7 +150,10 @@ async function mapConcurrent(items, limit, fn) {
  * Fetches movie theater data for a single province/city with retries.
  */
 async function fetchProvince(slug, retries = 3) {
-  const baseUrl = (process.env.API_BASE_URL || 'https://www.clickthecity.com/api').replace(/\/+$/, '');
+  const baseUrl = (process.env.API_BASE_URL || '').replace(/\/+$/, '');
+  if (!baseUrl) {
+    throw new Error('API_BASE_URL environment variable is required.');
+  }
   const url = `${baseUrl}/movies/province/${slug}`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
