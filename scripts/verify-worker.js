@@ -100,6 +100,72 @@ async function testWorker() {
   } finally {
     globalThis.fetch = originalFetch;
   }
+
+  // 7. Locations endpoint: Missing env.DB
+  const missingDbRes = await worker.fetch(
+    new Request('http://localhost/api/locations', { method: 'GET' }),
+    {}
+  );
+  assert.equal(missingDbRes.status, 500);
+  const missingDbBody = await missingDbRes.json();
+  assert.match(missingDbBody.error, /Database binding DB is not configured/);
+  console.log('✓ GET /api/locations without DB binding returns 500');
+
+  // 8. Locations endpoint: Empty database
+  const mockEmptyDb = {
+    prepare(query) {
+      return {
+        async all() {
+          return { results: [] };
+        },
+      };
+    },
+  };
+  const emptyDbRes = await worker.fetch(
+    new Request('http://localhost/api/locations', { method: 'GET' }),
+    { DB: mockEmptyDb }
+  );
+  assert.equal(emptyDbRes.status, 200);
+  const emptyDbData = await emptyDbRes.json();
+  assert.equal(emptyDbData.snapshot_date, null);
+  assert.deepEqual(emptyDbData.provinces, []);
+  assert.deepEqual(emptyDbData.metro_manila, []);
+  console.log('✓ GET /api/locations on empty DB returns empty lists and null date');
+
+  // 9. Locations endpoint: Populated database
+  const mockRows = [
+    { snapshot_date: '2026-08-17', province_slug: 'cebu', name: 'Cebu', theater_count: 8 },
+    { snapshot_date: '2026-08-17', province_slug: 'makati', name: 'Makati', theater_count: 6 },
+    { snapshot_date: '2026-08-17', province_slug: 'pampanga', name: 'Pampanga', theater_count: 5 },
+    { snapshot_date: '2026-08-17', province_slug: 'quezon-city', name: 'Quezon City', theater_count: 14 },
+  ];
+  const mockPopulatedDb = {
+    prepare(query) {
+      assert.match(query, /MAX\(snapshot_date\)/);
+      return {
+        async all() {
+          return { results: mockRows };
+        },
+      };
+    },
+  };
+  const locationsRes = await worker.fetch(
+    new Request('http://localhost/api/locations', { method: 'GET' }),
+    { DB: mockPopulatedDb }
+  );
+  assert.equal(locationsRes.status, 200);
+  assert.equal(locationsRes.headers.get('X-Cache'), 'MISS');
+  const locationsData = await locationsRes.json();
+  assert.equal(locationsData.snapshot_date, '2026-08-17');
+
+  assert.equal(locationsData.provinces.length, 2);
+  assert.deepEqual(locationsData.provinces[0], { slug: 'cebu', name: 'Cebu', theater_count: 8 });
+  assert.deepEqual(locationsData.provinces[1], { slug: 'pampanga', name: 'Pampanga', theater_count: 5 });
+
+  assert.equal(locationsData.metro_manila.length, 2);
+  assert.deepEqual(locationsData.metro_manila[0], { slug: 'makati', name: 'Makati', theater_count: 6 });
+  assert.deepEqual(locationsData.metro_manila[1], { slug: 'quezon-city', name: 'Quezon City', theater_count: 14 });
+  console.log('✓ GET /api/locations groups provinces and Metro Manila cities accurately with theater counts');
 }
 
 testWorker().then(() => {

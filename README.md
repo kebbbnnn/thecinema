@@ -122,10 +122,49 @@ node scripts/fetch-theaters.js --local
 
 ## ⚡ Movie Schedule Proxy Worker
 
-A Cloudflare Worker that proxies the upstream movie schedule API, caches responses at the edge (1-hour TTL), and transforms showtimes into a movie-centric format.
+A Cloudflare Worker that provides endpoints for querying available movie theater locations from D1 and proxying/caching movie schedule showtimes from the upstream API.
 
-### Endpoint
+### Endpoints
 
+#### 1. Get Available Locations
+```http
+GET /api/locations
+```
+
+Returns all provinces and Metro Manila cities that have theater data in the latest D1 snapshot, grouped by location type, along with theater counts. Cached at the edge for 1 hour (`Cache-Control: public, max-age=3600`).
+
+**Response Format:**
+```json
+{
+  "snapshot_date": "2026-08-17",
+  "provinces": [
+    {
+      "slug": "cebu",
+      "name": "Cebu",
+      "theater_count": 8
+    },
+    {
+      "slug": "pampanga",
+      "name": "Pampanga",
+      "theater_count": 5
+    }
+  ],
+  "metro_manila": [
+    {
+      "slug": "makati",
+      "name": "Makati",
+      "theater_count": 6
+    },
+    {
+      "slug": "quezon-city",
+      "name": "Quezon City",
+      "theater_count": 14
+    }
+  ]
+}
+```
+
+#### 2. Get Theater Showtimes
 ```http
 GET /api/theater/:slug?date=YYYY-MM-DD
 ```
@@ -133,7 +172,7 @@ GET /api/theater/:slug?date=YYYY-MM-DD
 - `:slug` — Theater slug (e.g. `kcc-mall-of-gensan`, `ayala-center-cebu`)
 - `date` *(optional)* — Date in `YYYY-MM-DD` format. Defaults to today in Philippine Time (UTC+8).
 
-### Transformed Response Format
+**Transformed Response Format:**
 
 ```json
 {

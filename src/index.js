@@ -17,6 +17,24 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+const METRO_MANILA_SLUGS = new Set([
+  'caloocan',
+  'las-pinas',
+  'makati',
+  'malabon',
+  'mandaluyong',
+  'manila',
+  'marikina',
+  'muntinlupa',
+  'paranaque',
+  'pasay',
+  'pasig',
+  'quezon-city',
+  'san-juan',
+  'taguig',
+  'valenzuela',
+]);
+
 // ============================================================================
 // HELPERS
 // ============================================================================
@@ -238,11 +256,94 @@ async function handleTheaterSchedule(request, env, params, searchParams) {
   return response;
 }
 
+/**
+ * Handler for GET /api/locations
+ * Returns provinces and Metro Manila cities that have theaters in the latest snapshot.
+ */
+async function handleLocations(request, env) {
+  if (!env.DB) {
+    return jsonResponse({ error: 'Database binding DB is not configured.' }, 500);
+  }
+
+  // Canonical cache key
+  const cacheKey = new Request(request.url);
+
+  // Check edge cache if available
+  const cache = typeof caches !== 'undefined' && caches ? caches.default : null;
+  if (cache) {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      const headers = new Headers(cachedResponse.headers);
+      headers.set('X-Cache', 'HIT');
+      return new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        headers,
+      });
+    }
+  }
+
+  try {
+    const query = `
+      SELECT snapshot_date, province_slug, province AS name, COUNT(*) AS theater_count
+      FROM theater_snapshots
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM theater_snapshots)
+      GROUP BY snapshot_date, province_slug, province
+      ORDER BY name ASC;
+    `;
+
+    const { results } = await env.DB.prepare(query).all();
+    const rows = results || [];
+
+    let snapshotDate = null;
+    const provinces = [];
+    const metroManila = [];
+
+    for (const row of rows) {
+      if (!snapshotDate && row.snapshot_date) {
+        snapshotDate = row.snapshot_date;
+      }
+
+      const item = {
+        slug: row.province_slug,
+        name: row.name || row.province_slug,
+        theater_count: Number(row.theater_count) || 0,
+      };
+
+      if (METRO_MANILA_SLUGS.has(row.province_slug)) {
+        metroManila.push(item);
+      } else {
+        provinces.push(item);
+      }
+    }
+
+    const payload = {
+      snapshot_date: snapshotDate,
+      provinces,
+      metro_manila: metroManila,
+    };
+
+    const response = jsonResponse(payload, 200, `public, max-age=${CACHE_TTL_SECONDS}`);
+    response.headers.set('X-Cache', 'MISS');
+
+    if (cache) {
+      await cache.put(cacheKey, response.clone());
+    }
+
+    return response;
+  } catch (err) {
+    return jsonResponse({ error: `Failed to query locations: ${err.message}` }, 500);
+  }
+}
+
 // ============================================================================
 // ROUTER
 // ============================================================================
 
 const ROUTES = [
+  {
+    pattern: /^\/api\/locations\/?$/,
+    handler: handleLocations,
+  },
   {
     pattern: /^\/api\/theater\/([a-z0-9-]+)\/?$/,
     handler: handleTheaterSchedule,
@@ -286,7 +387,7 @@ export default {
 
     if (!matched) {
       return jsonResponse(
-        { error: 'Not found. Use GET /api/theater/:slug?date=YYYY-MM-DD' },
+        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/theater/:slug?date=YYYY-MM-DD' },
         404
       );
     }
