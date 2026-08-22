@@ -164,7 +164,45 @@ Returns all provinces and Metro Manila cities that have theater data in the late
 }
 ```
 
-#### 2. Get Theater Showtimes
+#### 2. Get Theaters by Location
+```http
+GET /api/locations/:slug
+```
+
+- `:slug` — Province or Metro Manila city slug (e.g. `cebu`, `quezon-city`, `makati`)
+
+Returns all theaters and metadata for the given location in the latest D1 snapshot. Cached at the edge for 1 hour (`Cache-Control: public, max-age=3600`).
+
+**Response Format:**
+```json
+{
+  "location": {
+    "slug": "cebu",
+    "name": "Cebu"
+  },
+  "snapshot_date": "2026-08-17",
+  "total_theaters": 1,
+  "theaters": [
+    {
+      "id": 75,
+      "name": "Ayala Center Cebu",
+      "slug": "ayala-center-cebu",
+      "theater_type": "TM",
+      "branch_id": "7401",
+      "city": "Cebu City",
+      "address1": "Cebu Business Park, Archbishop Reyes Ave.",
+      "address2": null,
+      "logo_url": "https://cdn.example.com/logo.png",
+      "latitude": "10.3173",
+      "longitude": "123.9048",
+      "buy_ticket": true,
+      "mall_group_id": "ayala"
+    }
+  ]
+}
+```
+
+#### 3. Get Theater Showtimes
 ```http
 GET /api/theater/:slug?date=YYYY-MM-DD
 ```

@@ -97,6 +97,27 @@ function createMovieEntry(movie = {}) {
   };
 }
 
+/**
+ * Formats a raw database row from theater_snapshots into a standardized API theater object.
+ */
+function formatTheaterSnapshot(row) {
+  return {
+    id: row.theater_id || row.id || null,
+    name: row.name,
+    slug: row.slug,
+    theater_type: row.theater_type || null,
+    branch_id: row.branch_id || null,
+    city: row.city || null,
+    address1: row.address1 || null,
+    address2: row.address2 || null,
+    logo_url: row.logo_url || null,
+    latitude: row.latitude || null,
+    longitude: row.longitude || null,
+    buy_ticket: row.buy_ticket === 1 || row.buy_ticket === true,
+    mall_group_id: row.mall_group_id || null,
+  };
+}
+
 // ============================================================================
 // SERVICES & TRANSFORMS
 // ============================================================================
@@ -335,11 +356,96 @@ async function handleLocations(request, env) {
   }
 }
 
+/**
+ * Handler for GET /api/locations/:slug
+ * Returns all theaters in a given province or Metro Manila city for the latest snapshot.
+ */
+async function handleLocationTheaters(request, env, params) {
+  const slug = params[0];
+
+  if (!env.DB) {
+    return jsonResponse({ error: 'Database binding DB is not configured.' }, 500);
+  }
+
+  // Canonical cache key
+  const cacheKey = new Request(request.url);
+
+  // Check edge cache if available
+  const cache = typeof caches !== 'undefined' && caches ? caches.default : null;
+  if (cache) {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      const headers = new Headers(cachedResponse.headers);
+      headers.set('X-Cache', 'HIT');
+      return new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        headers,
+      });
+    }
+  }
+
+  try {
+    const query = `
+      SELECT 
+        snapshot_date, province, theater_id, theater_type, slug, branch_id,
+        name, address1, address2, city, logo_url, latitude, longitude,
+        buy_ticket, mall_group_id
+      FROM theater_snapshots
+      WHERE province_slug = ?
+        AND snapshot_date = (
+          SELECT MAX(snapshot_date)
+          FROM theater_snapshots
+          WHERE province_slug = ?
+        )
+      ORDER BY name ASC;
+    `;
+
+    const { results } = await env.DB.prepare(query).bind(slug, slug).all();
+    const rows = results || [];
+
+    if (rows.length === 0) {
+      return jsonResponse(
+        { error: `Location "${slug}" not found or has no theater records.` },
+        404
+      );
+    }
+
+    const snapshotDate = rows[0].snapshot_date;
+    const locationName = rows[0].province || slug;
+    const theaters = rows.map(formatTheaterSnapshot);
+
+    const payload = {
+      location: {
+        slug,
+        name: locationName,
+      },
+      snapshot_date: snapshotDate,
+      total_theaters: theaters.length,
+      theaters,
+    };
+
+    const response = jsonResponse(payload, 200, `public, max-age=${CACHE_TTL_SECONDS}`);
+    response.headers.set('X-Cache', 'MISS');
+
+    if (cache) {
+      await cache.put(cacheKey, response.clone());
+    }
+
+    return response;
+  } catch (err) {
+    return jsonResponse({ error: `Failed to query theaters for location: ${err.message}` }, 500);
+  }
+}
+
 // ============================================================================
 // ROUTER
 // ============================================================================
 
 const ROUTES = [
+  {
+    pattern: /^\/api\/locations\/([a-z0-9-]+)\/?$/,
+    handler: handleLocationTheaters,
+  },
   {
     pattern: /^\/api\/locations\/?$/,
     handler: handleLocations,
@@ -387,7 +493,7 @@ export default {
 
     if (!matched) {
       return jsonResponse(
-        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/theater/:slug?date=YYYY-MM-DD' },
+        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/locations/:slug, GET /api/theater/:slug?date=YYYY-MM-DD' },
         404
       );
     }

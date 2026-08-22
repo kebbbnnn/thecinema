@@ -166,6 +166,105 @@ async function testWorker() {
   assert.deepEqual(locationsData.metro_manila[0], { slug: 'makati', name: 'Makati', theater_count: 6 });
   assert.deepEqual(locationsData.metro_manila[1], { slug: 'quezon-city', name: 'Quezon City', theater_count: 14 });
   console.log('✓ GET /api/locations groups provinces and Metro Manila cities accurately with theater counts');
+
+  // 10. Location theaters endpoint: Missing env.DB
+  const missingLocationDbRes = await worker.fetch(
+    new Request('http://localhost/api/locations/cebu', { method: 'GET' }),
+    {}
+  );
+  assert.equal(missingLocationDbRes.status, 500);
+  const missingLocationDbBody = await missingLocationDbRes.json();
+  assert.match(missingLocationDbBody.error, /Database binding DB is not configured/);
+  console.log('✓ GET /api/locations/:slug without DB binding returns 500');
+
+  // 11. Location theaters endpoint: Not found
+  const notFoundLocationDb = {
+    prepare(query) {
+      return {
+        bind(s1, s2) {
+          assert.equal(s1, 'non-existent');
+          assert.equal(s2, 'non-existent');
+          return {
+            async all() {
+              return { results: [] };
+            },
+          };
+        },
+      };
+    },
+  };
+  const notFoundLocationRes = await worker.fetch(
+    new Request('http://localhost/api/locations/non-existent', { method: 'GET' }),
+    { DB: notFoundLocationDb }
+  );
+  assert.equal(notFoundLocationRes.status, 404);
+  const notFoundLocationBody = await notFoundLocationRes.json();
+  assert.match(notFoundLocationBody.error, /Location "non-existent" not found/);
+  console.log('✓ GET /api/locations/:slug on non-existent location returns 404');
+
+  // 12. Location theaters endpoint: Success
+  const mockTheaterRows = [
+    {
+      snapshot_date: '2026-08-17',
+      province: 'Cebu',
+      theater_id: 75,
+      theater_type: 'TM',
+      slug: 'ayala-center-cebu',
+      branch_id: '7401',
+      name: 'Ayala Center Cebu',
+      address1: 'Cebu Business Park',
+      address2: null,
+      city: 'Cebu City',
+      logo_url: 'https://img.test/ayala.png',
+      latitude: '10.3173',
+      longitude: '123.9048',
+      buy_ticket: 1,
+      mall_group_id: 'ayala',
+    },
+  ];
+  const mockLocationTheatersDb = {
+    prepare(query) {
+      assert.match(query, /province_slug = \?/);
+      return {
+        bind(s1, s2) {
+          assert.equal(s1, 'cebu');
+          assert.equal(s2, 'cebu');
+          return {
+            async all() {
+              return { results: mockTheaterRows };
+            },
+          };
+        },
+      };
+    },
+  };
+  const locationTheatersRes = await worker.fetch(
+    new Request('http://localhost/api/locations/cebu', { method: 'GET' }),
+    { DB: mockLocationTheatersDb }
+  );
+  assert.equal(locationTheatersRes.status, 200);
+  assert.equal(locationTheatersRes.headers.get('X-Cache'), 'MISS');
+  const locationTheatersData = await locationTheatersRes.json();
+  assert.deepEqual(locationTheatersData.location, { slug: 'cebu', name: 'Cebu' });
+  assert.equal(locationTheatersData.snapshot_date, '2026-08-17');
+  assert.equal(locationTheatersData.total_theaters, 1);
+  assert.equal(locationTheatersData.theaters.length, 1);
+  assert.deepEqual(locationTheatersData.theaters[0], {
+    id: 75,
+    name: 'Ayala Center Cebu',
+    slug: 'ayala-center-cebu',
+    theater_type: 'TM',
+    branch_id: '7401',
+    city: 'Cebu City',
+    address1: 'Cebu Business Park',
+    address2: null,
+    logo_url: 'https://img.test/ayala.png',
+    latitude: '10.3173',
+    longitude: '123.9048',
+    buy_ticket: true,
+    mall_group_id: 'ayala',
+  });
+  console.log('✓ GET /api/locations/:slug returns location metadata and formatted theaters');
 }
 
 testWorker().then(() => {
