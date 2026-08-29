@@ -8,7 +8,9 @@
 // CONSTANTS
 // ============================================================================
 
-const CACHE_TTL_SECONDS = 3600; // 1 hour
+const CACHE_TTL_SECONDS = 3600; // 1 hour (theaters & locations)
+const MOVIE_CACHE_TTL_SECONDS = 86400; // 24 hours (edge cache for movie details)
+const MOVIE_D1_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (D1 cache freshness)
 const UPSTREAM_TIMEOUT_MS = 15000; // 15 seconds
 
 const CORS_HEADERS = {
@@ -160,6 +162,121 @@ async function fetchUpstreamSchedule(apiBaseUrl, slug, date) {
     }
 
     return { ok: true, data };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Upstream fetch failed: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Normalizes raw upstream movie details into a standardized, clean schema.
+ */
+function normalizeMovieDetails(raw = {}) {
+  const youtubeId = raw.youtube_trailer_url || null;
+  let youtubeUrl = null;
+  if (youtubeId) {
+    youtubeUrl = youtubeId.startsWith('http')
+      ? youtubeId
+      : `https://www.youtube.com/watch?v=${youtubeId}`;
+  }
+
+  const genres = (raw.genre_list || []).map((g) => ({
+    id: g.genre_id || null,
+    slug: g.slug || null,
+    name: g.name || null,
+  }));
+
+  const credits = (raw.person_assoc || []).map((category) => ({
+    category: category.name || 'Other',
+    members: (category.assoc || []).map((person) => ({
+      id: person.person_id || null,
+      hash: person.hash || null,
+      slug: person.slug || null,
+      name: person.name || `${person.first_name || ''}${person.last_name || ''}`.trim() || null,
+      role: person.role || null,
+      image_url: person.image_url || null,
+    })),
+  }));
+
+  const userRating = raw.user_rating || {};
+  const userAverage = parseFloat(userRating.average) || 0.0;
+  const userTotal = parseInt(userRating.total, 10) || 0;
+
+  return {
+    id: raw.movie_id || null,
+    hash: raw.hash || null,
+    slug: raw.slug || null,
+    title: raw.title || 'Unknown',
+    synopsis: raw.synopsis || null,
+    runtime: raw.running_time || null,
+    release_date: raw.release_date || null,
+    year_released: raw.year_released || null,
+    opening_date: raw.opening_date || null,
+    country: raw.country || null,
+    released_by: raw.released_by || null,
+    mtrcb_rating: raw.mtrcb_rating || null,
+    now_showing: raw.now_showing === true || raw.now_showing === 1,
+    buy_ticket: raw.buy_ticket === true || raw.buy_ticket === 1,
+    posters: {
+      small: raw.poster || null,
+      large: raw.poster_url || raw.poster_large || null,
+    },
+    trailers: {
+      youtube_id: youtubeId,
+      youtube_url: youtubeUrl,
+      imdb_url: raw.imdb_url || null,
+      website_url: raw.website || null,
+    },
+    genres,
+    credits,
+    ratings: {
+      user_average: userAverage,
+      user_total: userTotal,
+    },
+  };
+}
+
+/**
+ * Fetches full movie details from the upstream API.
+ * Returns { ok: true, data } or { ok: false, error, status }.
+ */
+async function fetchUpstreamMovieDetails(apiBaseUrl, hash) {
+  const upstreamUrl = `${apiBaseUrl}/movies/${hash}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+    const upstreamRes = await fetch(upstreamUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'TheCinema-Worker/1.0',
+        Accept: 'application/json',
+      },
+    });
+    clearTimeout(timeoutId);
+
+    if (!upstreamRes.ok) {
+      return {
+        ok: false,
+        status: upstreamRes.status === 404 ? 404 : 502,
+        error: `Upstream returned ${upstreamRes.status}`,
+      };
+    }
+
+    const json = await upstreamRes.json();
+    if (!json || json.status === false || !json.data) {
+      return {
+        ok: false,
+        status: 404,
+        error: json?.message || 'Movie not found upstream',
+      };
+    }
+
+    return { ok: true, data: json.data };
   } catch (err) {
     return {
       ok: false,
@@ -437,6 +554,143 @@ async function handleLocationTheaters(request, env, params) {
   }
 }
 
+/**
+ * Handler for GET /api/movies/:hash
+ * Returns full movie details with two-tier caching (Edge Cache + D1 persistent cache).
+ */
+async function handleMovieDetails(request, env, params) {
+  const hash = params[0];
+
+  // Canonical cache key
+  const cacheKey = new Request(request.url);
+
+  // 1. Check Edge Cache if available
+  const cache = typeof caches !== 'undefined' && caches ? caches.default : null;
+  if (cache) {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      const headers = new Headers(cachedResponse.headers);
+      headers.set('X-Cache', 'HIT');
+      return new Response(cachedResponse.body, {
+        status: cachedResponse.status,
+        headers,
+      });
+    }
+  }
+
+  let d1Record = null;
+  let isD1Fresh = false;
+
+  // 2. Check D1 Persistent Cache if available
+  if (env.DB) {
+    try {
+      const query = `
+        SELECT data_json, updated_at
+        FROM movie_cache
+        WHERE hash = ?;
+      `;
+      const result = await env.DB.prepare(query).bind(hash).first();
+      if (result && result.data_json) {
+        d1Record = result;
+        const updatedAtTime = result.updated_at ? new Date(result.updated_at).getTime() : 0;
+        const now = Date.now();
+        if (now - updatedAtTime <= MOVIE_D1_TTL_MS) {
+          isD1Fresh = true;
+        }
+      }
+    } catch (err) {
+      // D1 query failure shouldn't crash worker, fallback to upstream fetch
+      console.error(`D1 lookup error for hash ${hash}:`, err);
+    }
+  }
+
+  // If D1 record is fresh (< 7 days), serve directly and backfill edge cache
+  if (d1Record && isD1Fresh) {
+    try {
+      const parsedData = JSON.parse(d1Record.data_json);
+      const response = jsonResponse(parsedData, 200, `public, max-age=${MOVIE_CACHE_TTL_SECONDS}`);
+      response.headers.set('X-Cache', 'HIT-D1');
+
+      if (cache) {
+        await cache.put(cacheKey, response.clone());
+      }
+      return response;
+    } catch {
+      // Corrupt data_json in D1, proceed to upstream fetch
+    }
+  }
+
+  // 3. Upstream Fetch
+  const apiBaseUrl = (env.API_BASE_URL || '').replace(/\/+$/, '');
+  if (!apiBaseUrl) {
+    // If we have a stale D1 record, serve it rather than failing with 500
+    if (d1Record) {
+      try {
+        const parsedData = JSON.parse(d1Record.data_json);
+        const response = jsonResponse(parsedData, 200, `public, max-age=${MOVIE_CACHE_TTL_SECONDS}`);
+        response.headers.set('X-Cache', 'STALE-D1');
+        response.headers.set('Warning', '110 - "Response is Stale"');
+        return response;
+      } catch {
+        // fall through
+      }
+    }
+    return jsonResponse({ error: 'Server misconfiguration: API_BASE_URL not set.' }, 500);
+  }
+
+  const upstream = await fetchUpstreamMovieDetails(apiBaseUrl, hash);
+
+  if (upstream.ok) {
+    const normalized = normalizeMovieDetails(upstream.data);
+    const dataJson = JSON.stringify(normalized);
+
+    // Persist to D1
+    if (env.DB) {
+      try {
+        const upsertQuery = `
+          INSERT INTO movie_cache (hash, movie_id, slug, title, data_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(hash) DO UPDATE SET
+            movie_id = excluded.movie_id,
+            slug = excluded.slug,
+            title = excluded.title,
+            data_json = excluded.data_json,
+            updated_at = datetime('now');
+        `;
+        await env.DB.prepare(upsertQuery)
+          .bind(hash, normalized.id, normalized.slug, normalized.title, dataJson)
+          .run();
+      } catch (err) {
+        console.error(`D1 upsert error for hash ${hash}:`, err);
+      }
+    }
+
+    const response = jsonResponse(normalized, 200, `public, max-age=${MOVIE_CACHE_TTL_SECONDS}`);
+    response.headers.set('X-Cache', 'MISS');
+
+    if (cache) {
+      await cache.put(cacheKey, response.clone());
+    }
+    return response;
+  }
+
+  // 4. Upstream Failed — Check if we have a stale D1 record as resilient fallback
+  if (d1Record) {
+    try {
+      const parsedData = JSON.parse(d1Record.data_json);
+      const response = jsonResponse(parsedData, 200, `public, max-age=${MOVIE_CACHE_TTL_SECONDS}`);
+      response.headers.set('X-Cache', 'STALE-D1');
+      response.headers.set('Warning', '110 - "Response is Stale"');
+      return response;
+    } catch {
+      // fall through
+    }
+  }
+
+  // 5. No fallback available, return upstream error
+  return jsonResponse({ error: upstream.error }, upstream.status);
+}
+
 // ============================================================================
 // ROUTER
 // ============================================================================
@@ -453,6 +707,10 @@ const ROUTES = [
   {
     pattern: /^\/api\/theater\/([a-z0-9-]+)\/?$/,
     handler: handleTheaterSchedule,
+  },
+  {
+    pattern: /^\/api\/movies\/([a-zA-Z0-9_-]+)\/?$/,
+    handler: handleMovieDetails,
   },
 ];
 
@@ -493,7 +751,7 @@ export default {
 
     if (!matched) {
       return jsonResponse(
-        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/locations/:slug, GET /api/theater/:slug?date=YYYY-MM-DD' },
+        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/locations/:slug, GET /api/theater/:slug?date=YYYY-MM-DD, GET /api/movies/:hash' },
         404
       );
     }

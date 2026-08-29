@@ -257,6 +257,73 @@ GET /api/theater/:slug?date=YYYY-MM-DD
 }
 ```
 
+#### 4. Get Movie Full Details
+```http
+GET /api/movies/:hash
+```
+
+- `:hash` — Movie hash identifier (e.g. `df4c1b`, `3L7iFE`)
+
+Returns full details for a movie (synopsis, runtime, release date, genres, posters, full trailers, grouped cast and crew, ratings). Implements two-tier caching (Cloudflare Edge Cache for 24 hours + Cloudflare D1 persistent document cache with 7-day TTL and resilient fallback).
+
+**Headers:**
+- `Cache-Control: public, max-age=86400`
+- `X-Cache: HIT | HIT-D1 | MISS | STALE-D1`
+
+**Transformed Response Format:**
+
+```json
+{
+  "id": 21097,
+  "hash": "df4c1b",
+  "slug": "paw-patrol-the-dino-movie",
+  "title": "PAW Patrol: The Dino Movie",
+  "synopsis": "The Paw Patrol lands on a mysterious dinosaur island after a storm, where they meet Rex, a stranded pup. When Humdinger's reckless mining triggers a volcano, the team faces their biggest rescue mission yet to save the island.",
+  "runtime": "1 hr 28 min",
+  "release_date": "2026-08-26",
+  "year_released": "2026",
+  "opening_date": "Wed, 26 Aug 2026",
+  "country": "United States",
+  "released_by": "Columbia Pictures",
+  "mtrcb_rating": "G",
+  "now_showing": true,
+  "buy_ticket": true,
+  "posters": {
+    "small": "https://cdn1.clickthecity.com/images/movies/poster/215/21097_3.jpg",
+    "large": "https://cdn1.clickthecity.com/images/movies/poster/600/21097_3.jpg"
+  },
+  "trailers": {
+    "youtube_id": "d7xEo1GGwE0",
+    "youtube_url": "https://www.youtube.com/watch?v=d7xEo1GGwE0",
+    "imdb_url": "http://www.imdb.com/title/tt29356163/",
+    "website_url": "https://www.paramountpictures.com/movies/paw-patrol-3-the-dino-movie"
+  },
+  "genres": [
+    { "id": 2, "slug": "adventure", "name": "Adventure" },
+    { "id": 15, "slug": "animation", "name": "Animation" }
+  ],
+  "credits": [
+    {
+      "category": "Main Cast",
+      "members": [
+        {
+          "id": 19191,
+          "hash": "3L7iFE",
+          "slug": "mckenna-grace",
+          "name": "Mckenna Grace",
+          "role": "Skye (voice)",
+          "image_url": "https://cdn1.clickthecity.com/profiles/100/19191_5.jpg"
+        }
+      ]
+    }
+  ],
+  "ratings": {
+    "user_average": 0.0,
+    "user_total": 0
+  }
+}
+```
+
 ### Worker Deployment & Setup
 
 1. **Set the upstream API secret in Cloudflare**:
