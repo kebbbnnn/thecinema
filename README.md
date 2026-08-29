@@ -64,37 +64,64 @@ CREATE TABLE fetch_log (
 ## 🚀 Setup & Cloudflare Configuration
 
 ### 1. Prerequisites
-Node.js v18+ is required. No `npm install` needed — this repository has zero npm dependencies!
+Node.js v18+ is required. No `npm install` needed — this repository has zero permanent npm dependencies! All CLI operations use `npx -y wrangler`.
 
-### 2. Create Cloudflare D1 Database
-Make sure you are logged in to Cloudflare CLI:
+### 2. Authenticate Cloudflare CLI
+Log in to your Cloudflare account via browser:
 ```bash
-npx wrangler login
+npx -y wrangler login
 ```
 
+Verify your active session:
+```bash
+npx -y wrangler whoami
+```
+
+### 3. Create or Link Cloudflare D1 Database
 Create your D1 database:
 ```bash
-npx wrangler d1 create thecinema-db
+npx -y wrangler d1 create thecinema-db
 ```
-Copy the `database_id` output by Wrangler and paste it into [`wrangler.toml`](./wrangler.toml).
 
-### 3. Run Migrations
-Apply the initial schema to your remote D1 database:
+Or list existing databases to find your UUID:
+```bash
+npx -y wrangler d1 list
+```
+
+Copy the `database_id` output and paste it into [`wrangler.toml`](./wrangler.toml):
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "thecinema-db"
+database_id = "your-database-uuid"
+migrations_dir = "migrations"
+```
+
+### 4. Run Migrations
+Apply all schema migrations (`0001_initial_schema.sql`, `0002_movie_cache.sql`) to your remote D1 database:
 ```bash
 npm run db:migrate:remote
 ```
-*(Or test locally with `npm run db:migrate:local`)*
 
-### 4. Configure GitHub Repository Secrets
+*(To test against local SQLite during development: `npm run db:migrate:local`)*
+
+### 5. Configure Worker Secret
+Set the upstream API base URL secret in Cloudflare:
+```bash
+npx -y wrangler secret put API_BASE_URL
+```
+*(Enter `https://www.clickthecity.com/api` when prompted)*
+
+### 6. Configure GitHub Repository Secrets (For Weekly Pipeline)
 In your GitHub repository, go to **Settings > Secrets and variables > Actions** and add the following repository secrets:
 
 | Secret Name | Description | Where to find |
 |---|---|---|
-| `API_BASE_URL` | Base API endpoint URL | Secret / API provider URL |
+| `API_BASE_URL` | Base API endpoint URL | `https://www.clickthecity.com/api` |
 | `CLOUDFLARE_API_TOKEN` | API Token with **D1 Edit** permissions | Cloudflare Dashboard > My Profile > API Tokens |
-| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID | Cloudflare Dashboard URL or Worker overview |
+| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID | Output from `npx -y wrangler whoami` |
 | `D1_DATABASE_NAME` | D1 database name (optional, defaults to `thecinema-db`) | Your wrangler.toml / D1 dashboard |
-| `D1_DATABASE_ID` | D1 database UUID | Output from `wrangler d1 create` |
+| `D1_DATABASE_ID` | D1 database UUID | Output from `npx -y wrangler d1 list` |
 
 ---
 
@@ -326,19 +353,29 @@ Returns full details for a movie (synopsis, runtime, release date, genres, poste
 
 ### Worker Deployment & Setup
 
-1. **Set the upstream API secret in Cloudflare**:
+1. **Set Upstream API Secret in Cloudflare** *(One-time)*:
    ```bash
-   npx wrangler secret put API_BASE_URL
+   npx -y wrangler secret put API_BASE_URL
+   ```
+   *(Enter `https://www.clickthecity.com/api`)*
+
+2. **Apply Database Migrations to Remote D1**:
+   ```bash
+   npm run db:migrate:remote
    ```
 
-2. **Run locally**:
-   ```bash
-   npm run dev
-   ```
-
-3. **Deploy to Cloudflare Workers**:
+3. **Deploy Worker to Production**:
    ```bash
    npm run deploy
+   ```
+
+4. **Local Development**:
+   ```bash
+   # Run local D1 migrations
+   npm run db:migrate:local
+
+   # Start local dev worker
+   npm run dev
    ```
 
 ---
