@@ -1,7 +1,8 @@
 /**
  * The Cinema — Movie Schedule Proxy Worker
  * Proxies upstream movie schedule API, caches at the edge,
- * and transforms responses into a movie-centric format.
+ * transforms responses into a movie-centric format, and manages
+ * custom theater photography via ImageKit and Cloudflare D1.
  */
 
 // ============================================================================
@@ -15,8 +16,8 @@ const UPSTREAM_TIMEOUT_MS = 15000; // 15 seconds
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Key, Authorization',
 };
 
 const METRO_MANILA_SLUGS = new Set([
@@ -85,6 +86,94 @@ function corsPreflightResponse() {
 }
 
 /**
+ * Validates admin API authentication.
+ */
+function validateAdminAuth(request, env) {
+  const configuredKey = env.ADMIN_API_KEY;
+  if (!configuredKey) {
+    return { ok: false, status: 500, error: 'Server misconfiguration: ADMIN_API_KEY not set.' };
+  }
+
+  const xAdminKey = request.headers.get('X-Admin-Key');
+  const authHeader = request.headers.get('Authorization');
+  const bearerKey = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+  const providedKey = xAdminKey || bearerKey;
+  if (!providedKey || providedKey !== configuredKey) {
+    return { ok: false, status: 401, error: 'Unauthorized: Invalid or missing admin key.' };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Uploads an image binary/file to ImageKit.io.
+ */
+async function uploadToImageKit(fileBlob, fileName, env) {
+  const privateKey = env.IMAGEKIT_PRIVATE_KEY;
+  if (!privateKey) {
+    return { ok: false, status: 500, error: 'Server misconfiguration: IMAGEKIT_PRIVATE_KEY not set.' };
+  }
+
+  const formData = new FormData();
+  formData.append('file', fileBlob, fileName);
+  formData.append('fileName', fileName);
+  formData.append('folder', '/theaters');
+  formData.append('useUniqueFileName', 'true');
+
+  const authHeader = `Basic ${btoa(`${privateKey}:`)}`;
+
+  try {
+    const res = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader,
+      },
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      return { ok: false, status: 502, error: `ImageKit upload failed (${res.status}): ${errorText}` };
+    }
+
+    const json = await res.json();
+    return {
+      ok: true,
+      data: {
+        fileId: json.fileId,
+        name: json.name,
+        url: json.url,
+        thumbnailUrl: json.thumbnailUrl || json.url,
+      },
+    };
+  } catch (err) {
+    return { ok: false, status: 502, error: `ImageKit upload request error: ${err.message}` };
+  }
+}
+
+/**
+ * Deletes an image file from ImageKit.io by file ID.
+ */
+async function deleteFromImageKit(fileId, env) {
+  const privateKey = env.IMAGEKIT_PRIVATE_KEY;
+  if (!privateKey || !fileId) return { ok: true };
+
+  const authHeader = `Basic ${btoa(`${privateKey}:`)}`;
+  try {
+    const res = await fetch(`https://api.imagekit.io/v1/files/${fileId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: authHeader,
+      },
+    });
+    return { ok: res.ok || res.status === 404 };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
  * Normalizes movie data into a standard movie object with an empty showtimes array.
  */
 function createMovieEntry(movie = {}) {
@@ -113,6 +202,7 @@ function formatTheaterSnapshot(row) {
     address1: row.address1 || null,
     address2: row.address2 || null,
     logo_url: row.logo_url || null,
+    image_url: row.custom_image_url || row.logo_url || null,
     latitude: row.latitude || null,
     longitude: row.longitude || null,
     buy_ticket: row.buy_ticket === 1 || row.buy_ticket === true,
@@ -322,6 +412,7 @@ function transformResponse(data, requestedDate) {
       id: theater.id,
       name: theater.name,
       slug: theater.slug,
+      image_url: null,
       city: theater.city,
       address: theater.address,
       latitude: theater.latitude,
@@ -381,8 +472,23 @@ async function handleTheaterSchedule(request, env, params, searchParams) {
     return jsonResponse({ error: upstream.error }, upstream.status);
   }
 
-  // Transform and build cacheable response
+  // Transform response
   const transformed = transformResponse(upstream.data, date);
+
+  // Check D1 for custom image override
+  if (env.DB && transformed.theater) {
+    try {
+      const customImg = await env.DB.prepare(
+        'SELECT image_url FROM theater_custom_images WHERE slug = ?'
+      ).bind(slug).first();
+      if (customImg && customImg.image_url) {
+        transformed.theater.image_url = customImg.image_url;
+      }
+    } catch (err) {
+      console.error(`Error querying custom image for theater ${slug}:`, err);
+    }
+  }
+
   const response = jsonResponse(transformed, 200, `public, max-age=${CACHE_TTL_SECONDS}`);
   response.headers.set('X-Cache', 'MISS');
 
@@ -504,17 +610,19 @@ async function handleLocationTheaters(request, env, params) {
   try {
     const query = `
       SELECT 
-        snapshot_date, province, theater_id, theater_type, slug, branch_id,
-        name, address1, address2, city, logo_url, latitude, longitude,
-        buy_ticket, mall_group_id
-      FROM theater_snapshots
-      WHERE province_slug = ?
-        AND snapshot_date = (
+        t.snapshot_date, t.province, t.theater_id, t.theater_type, t.slug, t.branch_id,
+        t.name, t.address1, t.address2, t.city, t.logo_url, t.latitude, t.longitude,
+        t.buy_ticket, t.mall_group_id,
+        c.image_url AS custom_image_url
+      FROM theater_snapshots t
+      LEFT JOIN theater_custom_images c ON t.slug = c.slug
+      WHERE t.province_slug = ?
+        AND t.snapshot_date = (
           SELECT MAX(snapshot_date)
           FROM theater_snapshots
           WHERE province_slug = ?
         )
-      ORDER BY name ASC;
+      ORDER BY t.name ASC;
     `;
 
     const { results } = await env.DB.prepare(query).bind(slug, slug).all();
@@ -599,7 +707,6 @@ async function handleMovieDetails(request, env, params) {
         }
       }
     } catch (err) {
-      // D1 query failure shouldn't crash worker, fallback to upstream fetch
       console.error(`D1 lookup error for hash ${hash}:`, err);
     }
   }
@@ -623,7 +730,6 @@ async function handleMovieDetails(request, env, params) {
   // 3. Upstream Fetch
   const apiBaseUrl = (env.API_BASE_URL || '').replace(/\/+$/, '');
   if (!apiBaseUrl) {
-    // If we have a stale D1 record, serve it rather than failing with 500
     if (d1Record) {
       try {
         const parsedData = JSON.parse(d1Record.data_json);
@@ -692,43 +798,269 @@ async function handleMovieDetails(request, env, params) {
 }
 
 // ============================================================================
+// ADMIN ROUTE HANDLERS
+// ============================================================================
+
+/**
+ * Handler for GET /api/admin/theaters
+ * Lists all theaters from the latest snapshot combined with custom image status.
+ */
+async function handleAdminListTheaters(request, env) {
+  const auth = validateAdminAuth(request, env);
+  if (!auth.ok) {
+    return jsonResponse({ error: auth.error }, auth.status);
+  }
+
+  if (!env.DB) {
+    return jsonResponse({ error: 'Database binding DB is not configured.' }, 500);
+  }
+
+  try {
+    const query = `
+      SELECT 
+        s.theater_id,
+        s.slug,
+        s.name,
+        s.province,
+        s.province_slug,
+        s.city,
+        s.logo_url,
+        c.image_url AS custom_image_url,
+        c.file_id,
+        c.thumbnail_url,
+        c.updated_at AS custom_image_updated_at
+      FROM theater_snapshots s
+      LEFT JOIN theater_custom_images c ON s.slug = c.slug
+      WHERE s.snapshot_date = (SELECT MAX(snapshot_date) FROM theater_snapshots)
+      ORDER BY s.province ASC, s.name ASC;
+    `;
+
+    const { results } = await env.DB.prepare(query).all();
+    const rows = results || [];
+
+    const theaters = rows.map((r) => ({
+      theater_id: r.theater_id,
+      slug: r.slug,
+      name: r.name,
+      province: r.province,
+      province_slug: r.province_slug,
+      city: r.city,
+      logo_url: r.logo_url,
+      has_custom_image: Boolean(r.custom_image_url),
+      custom_image_url: r.custom_image_url || null,
+      file_id: r.file_id || null,
+      thumbnail_url: r.thumbnail_url || null,
+      updated_at: r.custom_image_updated_at || null,
+    }));
+
+    const total = theaters.length;
+    const withCustomImage = theaters.filter((t) => t.has_custom_image).length;
+    const missingImage = total - withCustomImage;
+
+    return jsonResponse({
+      total,
+      with_custom_image: withCustomImage,
+      missing_image: missingImage,
+      theaters,
+    });
+  } catch (err) {
+    return jsonResponse({ error: `Failed to query admin theaters: ${err.message}` }, 500);
+  }
+}
+
+/**
+ * Handler for POST /api/admin/theaters/:slug/image
+ * Uploads an image to ImageKit and upserts the record in D1.
+ */
+async function handleAdminUploadTheaterImage(request, env, params) {
+  const auth = validateAdminAuth(request, env);
+  if (!auth.ok) {
+    return jsonResponse({ error: auth.error }, auth.status);
+  }
+
+  if (!env.DB) {
+    return jsonResponse({ error: 'Database binding DB is not configured.' }, 500);
+  }
+
+  const slug = params[0];
+  if (!slug) {
+    return jsonResponse({ error: 'Theater slug is required.' }, 400);
+  }
+
+  try {
+    const contentType = request.headers.get('content-type') || '';
+    if (!contentType.includes('multipart/form-data')) {
+      return jsonResponse({ error: 'Content-Type must be multipart/form-data.' }, 400);
+    }
+
+    const formData = await request.formData();
+    const file = formData.get('file');
+    const theaterId = formData.get('theater_id') ? parseInt(formData.get('theater_id'), 10) : null;
+    const name = formData.get('name') || slug;
+
+    if (!file || typeof file === 'string') {
+      return jsonResponse({ error: 'Missing image file.' }, 400);
+    }
+
+    // Validate MIME type
+    const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (file.type && !validMimes.includes(file.type.toLowerCase())) {
+      return jsonResponse({ error: `Unsupported file type: ${file.type}. Allowed: JPEG, PNG, WebP.` }, 400);
+    }
+
+    // Validate file size (max 5MB)
+    const MAX_FILE_SIZE = 5 * 1024 * 1024;
+    if (file.size && file.size > MAX_FILE_SIZE) {
+      return jsonResponse({ error: 'File size exceeds 5MB limit.' }, 400);
+    }
+
+    // Check if there is an existing custom image file_id to replace
+    let oldFileId = null;
+    try {
+      const existing = await env.DB.prepare(
+        'SELECT file_id FROM theater_custom_images WHERE slug = ?'
+      ).bind(slug).first();
+      if (existing) {
+        oldFileId = existing.file_id;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Upload to ImageKit
+    const fileName = `${slug}-${Date.now()}`;
+    const uploadResult = await uploadToImageKit(file, fileName, env);
+    if (!uploadResult.ok) {
+      return jsonResponse({ error: uploadResult.error }, uploadResult.status || 502);
+    }
+
+    const { url, fileId, thumbnailUrl } = uploadResult.data;
+
+    // Upsert into D1
+    const upsertQuery = `
+      INSERT INTO theater_custom_images (slug, theater_id, name, image_url, file_id, thumbnail_url, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(slug) DO UPDATE SET
+        theater_id = COALESCE(excluded.theater_id, theater_custom_images.theater_id),
+        name = COALESCE(excluded.name, theater_custom_images.name),
+        image_url = excluded.image_url,
+        file_id = excluded.file_id,
+        thumbnail_url = excluded.thumbnail_url,
+        updated_at = datetime('now');
+    `;
+
+    await env.DB.prepare(upsertQuery)
+      .bind(slug, theaterId, name, url, fileId, thumbnailUrl)
+      .run();
+
+    // Clean up old file from ImageKit asynchronously if different
+    if (oldFileId && oldFileId !== fileId) {
+      deleteFromImageKit(oldFileId, env).catch(() => {});
+    }
+
+    return jsonResponse({
+      success: true,
+      message: 'Theater image uploaded and saved successfully.',
+      data: {
+        slug,
+        theater_id: theaterId,
+        name,
+        image_url: url,
+        file_id: fileId,
+        thumbnail_url: thumbnailUrl,
+      },
+    });
+  } catch (err) {
+    return jsonResponse({ error: `Upload handler error: ${err.message}` }, 500);
+  }
+}
+
+/**
+ * Handler for DELETE /api/admin/theaters/:slug/image
+ * Deletes custom theater image from ImageKit and D1.
+ */
+async function handleAdminDeleteTheaterImage(request, env, params) {
+  const auth = validateAdminAuth(request, env);
+  if (!auth.ok) {
+    return jsonResponse({ error: auth.error }, auth.status);
+  }
+
+  if (!env.DB) {
+    return jsonResponse({ error: 'Database binding DB is not configured.' }, 500);
+  }
+
+  const slug = params[0];
+  if (!slug) {
+    return jsonResponse({ error: 'Theater slug is required.' }, 400);
+  }
+
+  try {
+    const existing = await env.DB.prepare(
+      'SELECT file_id FROM theater_custom_images WHERE slug = ?'
+    ).bind(slug).first();
+
+    if (!existing) {
+      return jsonResponse({ error: `No custom image found for theater "${slug}".` }, 404);
+    }
+
+    if (existing.file_id) {
+      await deleteFromImageKit(existing.file_id, env);
+    }
+
+    await env.DB.prepare('DELETE FROM theater_custom_images WHERE slug = ?').bind(slug).run();
+
+    return jsonResponse({
+      success: true,
+      message: `Custom image for theater "${slug}" deleted successfully.`,
+    });
+  } catch (err) {
+    return jsonResponse({ error: `Delete handler error: ${err.message}` }, 500);
+  }
+}
+
+// ============================================================================
 // ROUTER
 // ============================================================================
 
 const ROUTES = [
   {
+    pattern: /^\/api\/admin\/theaters\/([a-z0-9-]+)\/image\/?$/,
+    methods: {
+      POST: handleAdminUploadTheaterImage,
+      DELETE: handleAdminDeleteTheaterImage,
+    },
+  },
+  {
+    pattern: /^\/api\/admin\/theaters\/?$/,
+    methods: {
+      GET: handleAdminListTheaters,
+    },
+  },
+  {
     pattern: /^\/api\/locations\/([a-z0-9-]+)\/?$/,
-    handler: handleLocationTheaters,
+    methods: {
+      GET: handleLocationTheaters,
+    },
   },
   {
     pattern: /^\/api\/locations\/?$/,
-    handler: handleLocations,
+    methods: {
+      GET: handleLocations,
+    },
   },
   {
     pattern: /^\/api\/theater\/([a-z0-9-]+)\/?$/,
-    handler: handleTheaterSchedule,
+    methods: {
+      GET: handleTheaterSchedule,
+    },
   },
   {
     pattern: /^\/api\/movies\/([a-zA-Z0-9_-]+)\/?$/,
-    handler: handleMovieDetails,
+    methods: {
+      GET: handleMovieDetails,
+    },
   },
 ];
-
-/**
- * Matches a pathname against configured routes.
- */
-function matchRoute(pathname) {
-  for (const route of ROUTES) {
-    const match = pathname.match(route.pattern);
-    if (match) {
-      return {
-        handler: route.handler,
-        params: match.slice(1),
-      };
-    }
-  }
-  return null;
-}
 
 // ============================================================================
 // ENTRY POINT
@@ -741,21 +1073,26 @@ export default {
       return corsPreflightResponse();
     }
 
-    // Only allow GET requests
-    if (request.method !== 'GET') {
-      return jsonResponse({ error: 'Method not allowed' }, 405);
-    }
-
     const { pathname, searchParams } = new URL(request.url);
-    const matched = matchRoute(pathname);
 
-    if (!matched) {
-      return jsonResponse(
-        { error: 'Not found. Available endpoints: GET /api/locations, GET /api/locations/:slug, GET /api/theater/:slug?date=YYYY-MM-DD, GET /api/movies/:hash' },
-        404
-      );
+    for (const route of ROUTES) {
+      const match = pathname.match(route.pattern);
+      if (match) {
+        const handler = route.methods[request.method];
+        if (!handler) {
+          return jsonResponse({ error: `Method ${request.method} not allowed for ${pathname}` }, 405);
+        }
+        const params = match.slice(1);
+        return handler(request, env, params, searchParams);
+      }
     }
 
-    return matched.handler(request, env, matched.params, searchParams);
+    return jsonResponse(
+      {
+        error:
+          'Not found. Available endpoints: GET /api/locations, GET /api/locations/:slug, GET /api/theater/:slug?date=YYYY-MM-DD, GET /api/movies/:hash, GET /api/admin/theaters, POST /api/admin/theaters/:slug/image, DELETE /api/admin/theaters/:slug/image',
+      },
+      404
+    );
   },
 };

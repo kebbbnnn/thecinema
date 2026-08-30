@@ -259,6 +259,7 @@ async function testWorker() {
     address1: 'Cebu Business Park',
     address2: null,
     logo_url: 'https://img.test/ayala.png',
+    image_url: 'https://img.test/ayala.png',
     latitude: '10.3173',
     longitude: '123.9048',
     buy_ticket: true,
@@ -506,6 +507,263 @@ async function testWorker() {
     const notFoundBody = await notFoundMovieRes.json();
     assert.equal(notFoundBody.error, 'Movie not found');
     console.log('✓ GET /api/movies/:hash returns 404 when upstream cannot find movie and no cache exists');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 18. Admin endpoint: Unauthorized / Missing key
+  const unauthRes = await worker.fetch(
+    new Request('http://localhost/api/admin/theaters', { method: 'GET' }),
+    { ADMIN_API_KEY: 'secret-key-123' }
+  );
+  assert.equal(unauthRes.status, 401);
+  console.log('✓ GET /api/admin/theaters returns 401 Unauthorized without admin key');
+
+  // 19. Admin endpoint: Authorized list theaters with custom images
+  const mockAdminSnapshotRows = [
+    {
+      theater_id: 75,
+      slug: 'ayala-center-cebu',
+      name: 'Ayala Center Cebu',
+      province: 'Cebu',
+      province_slug: 'cebu',
+      city: 'Cebu City',
+      logo_url: 'https://img.test/ayala.png',
+      custom_image_url: 'https://ik.imagekit.io/thecinema/theaters/ayala.jpg',
+      file_id: 'ik_file_123',
+      thumbnail_url: 'https://ik.imagekit.io/thecinema/theaters/tr:n-media_library_thumbnail/ayala.jpg',
+      custom_image_updated_at: '2026-08-29 12:00:00',
+    },
+    {
+      theater_id: 76,
+      slug: 'sm-city-cebu',
+      name: 'SM City Cebu',
+      province: 'Cebu',
+      province_slug: 'cebu',
+      city: 'Cebu City',
+      logo_url: 'https://img.test/sm.png',
+      custom_image_url: null,
+      file_id: null,
+      thumbnail_url: null,
+      custom_image_updated_at: null,
+    },
+  ];
+
+  const mockAdminDb = {
+    prepare(query) {
+      assert.match(query, /FROM theater_snapshots/);
+      assert.match(query, /LEFT JOIN theater_custom_images/);
+      return {
+        async all() {
+          return { results: mockAdminSnapshotRows };
+        },
+      };
+    },
+  };
+
+  const adminListRes = await worker.fetch(
+    new Request('http://localhost/api/admin/theaters', {
+      method: 'GET',
+      headers: { 'X-Admin-Key': 'secret-key-123' },
+    }),
+    { ADMIN_API_KEY: 'secret-key-123', DB: mockAdminDb }
+  );
+  assert.equal(adminListRes.status, 200);
+  const adminListData = await adminListRes.json();
+  assert.equal(adminListData.total, 2);
+  assert.equal(adminListData.with_custom_image, 1);
+  assert.equal(adminListData.missing_image, 1);
+  assert.equal(adminListData.theaters[0].slug, 'ayala-center-cebu');
+  assert.equal(adminListData.theaters[0].has_custom_image, true);
+  assert.equal(adminListData.theaters[0].custom_image_url, 'https://ik.imagekit.io/thecinema/theaters/ayala.jpg');
+  assert.equal(adminListData.theaters[1].has_custom_image, false);
+  console.log('✓ GET /api/admin/theaters lists all theaters with image status counters');
+
+  // 20. Admin endpoint: POST upload theater image to ImageKit + D1 upsert
+  let d1AdminUpsertCalled = false;
+  const mockUploadDb = {
+    prepare(query) {
+      if (query.includes('SELECT file_id FROM theater_custom_images')) {
+        return {
+          bind(slug) {
+            return {
+              async first() {
+                return null;
+              },
+            };
+          },
+        };
+      }
+      if (query.includes('INSERT INTO theater_custom_images')) {
+        return {
+          bind(slug, theaterId, name, url, fileId, thumbnailUrl) {
+            assert.equal(slug, 'sm-city-cebu');
+            assert.equal(theaterId, 76);
+            assert.equal(name, 'SM City Cebu');
+            assert.equal(url, 'https://ik.imagekit.io/thecinema/theaters/sm-city-cebu.jpg');
+            assert.equal(fileId, 'ik_sm_789');
+            d1AdminUpsertCalled = true;
+            return {
+              async run() {
+                return { success: true };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
+  };
+
+  globalThis.fetch = async (url, options) => {
+    if (url === 'https://upload.imagekit.io/api/v1/files/upload') {
+      assert.equal(options.method, 'POST');
+      assert.ok(options.headers.Authorization.startsWith('Basic '));
+      return new Response(
+        JSON.stringify({
+          fileId: 'ik_sm_789',
+          name: 'sm-city-cebu.jpg',
+          url: 'https://ik.imagekit.io/thecinema/theaters/sm-city-cebu.jpg',
+          thumbnailUrl: 'https://ik.imagekit.io/thecinema/theaters/tr:n-media_library_thumbnail/sm-city-cebu.jpg',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    throw new Error(`Unexpected fetch to: ${url}`);
+  };
+
+  try {
+    const formData = new FormData();
+    const mockFile = new Blob(['mock-binary-image-data'], { type: 'image/jpeg' });
+    formData.append('file', mockFile, 'sm-city-cebu.jpg');
+    formData.append('theater_id', '76');
+    formData.append('name', 'SM City Cebu');
+
+    const uploadRes = await worker.fetch(
+      new Request('http://localhost/api/admin/theaters/sm-city-cebu/image', {
+        method: 'POST',
+        headers: {
+          'X-Admin-Key': 'secret-key-123',
+        },
+        body: formData,
+      }),
+      {
+        ADMIN_API_KEY: 'secret-key-123',
+        IMAGEKIT_PRIVATE_KEY: 'private_test_key_123',
+        DB: mockUploadDb,
+      }
+    );
+    assert.equal(uploadRes.status, 200);
+    const uploadData = await uploadRes.json();
+    assert.equal(uploadData.success, true);
+    assert.equal(uploadData.data.image_url, 'https://ik.imagekit.io/thecinema/theaters/sm-city-cebu.jpg');
+    assert.ok(d1AdminUpsertCalled);
+    console.log('✓ POST /api/admin/theaters/:slug/image uploads to ImageKit and upserts D1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 21. Admin endpoint: DELETE theater image
+  let d1DeleteCalled = false;
+  let imageKitDeleteCalled = false;
+  const mockDeleteDb = {
+    prepare(query) {
+      if (query.includes('SELECT file_id FROM theater_custom_images')) {
+        return {
+          bind(slug) {
+            assert.equal(slug, 'sm-city-cebu');
+            return {
+              async first() {
+                return { file_id: 'ik_sm_789' };
+              },
+            };
+          },
+        };
+      }
+      if (query.includes('DELETE FROM theater_custom_images WHERE slug = ?')) {
+        return {
+          bind(slug) {
+            assert.equal(slug, 'sm-city-cebu');
+            d1DeleteCalled = true;
+            return {
+              async run() {
+                return { success: true };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
+  };
+
+  globalThis.fetch = async (url, options) => {
+    if (url === 'https://api.imagekit.io/v1/files/ik_sm_789') {
+      assert.equal(options.method, 'DELETE');
+      imageKitDeleteCalled = true;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected fetch to: ${url}`);
+  };
+
+  try {
+    const deleteRes = await worker.fetch(
+      new Request('http://localhost/api/admin/theaters/sm-city-cebu/image', {
+        method: 'DELETE',
+        headers: { 'X-Admin-Key': 'secret-key-123' },
+      }),
+      {
+        ADMIN_API_KEY: 'secret-key-123',
+        IMAGEKIT_PRIVATE_KEY: 'private_test_key_123',
+        DB: mockDeleteDb,
+      }
+    );
+    assert.equal(deleteRes.status, 200);
+    assert.ok(imageKitDeleteCalled);
+    assert.ok(d1DeleteCalled);
+    console.log('✓ DELETE /api/admin/theaters/:slug/image deletes from ImageKit and D1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 22. Public theater schedule endpoint: Returns custom image_url from D1
+  const mockScheduleWithCustomImageDb = {
+    prepare(query) {
+      assert.match(query, /SELECT image_url FROM theater_custom_images WHERE slug = \?/);
+      return {
+        bind(slug) {
+          assert.equal(slug, 'test-theater');
+          return {
+            async first() {
+              return { image_url: 'https://ik.imagekit.io/thecinema/theaters/custom-test-theater.jpg' };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  globalThis.fetch = async (url) => {
+    return new Response(
+      JSON.stringify({
+        status: true,
+        theater: mockTheater,
+        now_showing: mockNowShowing,
+        schedules: mockSchedules,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  try {
+    const scheduleRes = await worker.fetch(
+      new Request('http://localhost/api/theater/test-theater?date=2026-08-22', { method: 'GET' }),
+      { API_BASE_URL: 'https://api.mock.test', DB: mockScheduleWithCustomImageDb }
+    );
+    assert.equal(scheduleRes.status, 200);
+    const scheduleData = await scheduleRes.json();
+    assert.equal(scheduleData.theater.image_url, 'https://ik.imagekit.io/thecinema/theaters/custom-test-theater.jpg');
+    console.log('✓ GET /api/theater/:slug enriches theater object with custom image_url from D1');
   } finally {
     globalThis.fetch = originalFetch;
   }

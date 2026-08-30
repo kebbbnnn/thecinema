@@ -11,6 +11,8 @@
     "fetch-theaters:dry-run": "node scripts/fetch-theaters.js --dry-run",
     "db:migrate:local": "npx -y wrangler d1 migrations apply thecinema-db --local",
     "db:migrate:remote": "npx -y wrangler d1 migrations apply thecinema-db --remote",
+    "dashboard:dev": "npm --prefix dashboard run dev",
+    "dashboard:build": "npm --prefix dashboard run build",
     "test": "node scripts/verify-worker.js && node scripts/verify-pipeline.js"
   },
   "keywords": [
