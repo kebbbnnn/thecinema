@@ -174,6 +174,26 @@ async function deleteFromImageKit(fileId, env) {
 }
 
 /**
+ * Safely deletes a file from ImageKit only if no other theater references it.
+ */
+async function safelyDeleteImageKitFile(fileId, currentSlug, env) {
+  if (!fileId || !env.DB) return;
+
+  try {
+    const check = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM theater_custom_images WHERE file_id = ? AND slug != ?'
+    ).bind(fileId, currentSlug).first();
+
+    const isStillUsed = Number(check?.count || 0) > 0;
+    if (!isStillUsed) {
+      await deleteFromImageKit(fileId, env);
+    }
+  } catch (err) {
+    console.error(`Error checking reference count for fileId ${fileId}:`, err);
+  }
+}
+
+/**
  * Normalizes movie data into a standard movie object with an empty showtimes array.
  */
 function createMovieEntry(movie = {}) {
@@ -870,7 +890,7 @@ async function handleAdminListTheaters(request, env) {
 
 /**
  * Handler for POST /api/admin/theaters/:slug/image
- * Uploads an image to ImageKit and upserts the record in D1.
+ * Uploads a fresh image to ImageKit OR links an existing ImageKit asset, and upserts D1.
  */
 async function handleAdminUploadTheaterImage(request, env, params) {
   const auth = validateAdminAuth(request, env);
@@ -889,30 +909,6 @@ async function handleAdminUploadTheaterImage(request, env, params) {
 
   try {
     const contentType = request.headers.get('content-type') || '';
-    if (!contentType.includes('multipart/form-data')) {
-      return jsonResponse({ error: 'Content-Type must be multipart/form-data.' }, 400);
-    }
-
-    const formData = await request.formData();
-    const file = formData.get('file');
-    const theaterId = formData.get('theater_id') ? parseInt(formData.get('theater_id'), 10) : null;
-    const name = formData.get('name') || slug;
-
-    if (!file || typeof file === 'string') {
-      return jsonResponse({ error: 'Missing image file.' }, 400);
-    }
-
-    // Validate MIME type
-    const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    if (file.type && !validMimes.includes(file.type.toLowerCase())) {
-      return jsonResponse({ error: `Unsupported file type: ${file.type}. Allowed: JPEG, PNG, WebP.` }, 400);
-    }
-
-    // Validate file size (max 5MB)
-    const MAX_FILE_SIZE = 5 * 1024 * 1024;
-    if (file.size && file.size > MAX_FILE_SIZE) {
-      return jsonResponse({ error: 'File size exceeds 5MB limit.' }, 400);
-    }
 
     // Check if there is an existing custom image file_id to replace
     let oldFileId = null;
@@ -927,14 +923,60 @@ async function handleAdminUploadTheaterImage(request, env, params) {
       // ignore
     }
 
-    // Upload to ImageKit
-    const fileName = `${slug}-${Date.now()}`;
-    const uploadResult = await uploadToImageKit(file, fileName, env);
-    if (!uploadResult.ok) {
-      return jsonResponse({ error: uploadResult.error }, uploadResult.status || 502);
-    }
+    let url, fileId, thumbnailUrl, theaterId, name;
 
-    const { url, fileId, thumbnailUrl } = uploadResult.data;
+    // CASE 1: JSON payload (linking an existing asset from the media library)
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      url = body.image_url;
+      fileId = body.file_id || null;
+      thumbnailUrl = body.thumbnail_url || url;
+      theaterId = body.theater_id ? parseInt(body.theater_id, 10) : null;
+      name = body.name || slug;
+
+      if (!url) {
+        return jsonResponse({ error: 'Missing image_url in JSON payload.' }, 400);
+      }
+    }
+    // CASE 2: Multipart form-data (fresh file upload)
+    else if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      const file = formData.get('file');
+      theaterId = formData.get('theater_id') ? parseInt(formData.get('theater_id'), 10) : null;
+      name = formData.get('name') || slug;
+
+      if (!file || typeof file === 'string') {
+        return jsonResponse({ error: 'Missing image file.' }, 400);
+      }
+
+      // Validate MIME type
+      const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+      if (file.type && !validMimes.includes(file.type.toLowerCase())) {
+        return jsonResponse({ error: `Unsupported file type: ${file.type}. Allowed: JPEG, PNG, WebP.` }, 400);
+      }
+
+      // Validate file size (max 5MB)
+      const MAX_FILE_SIZE = 5 * 1024 * 1024;
+      if (file.size && file.size > MAX_FILE_SIZE) {
+        return jsonResponse({ error: 'File size exceeds 5MB limit.' }, 400);
+      }
+
+      // Upload to ImageKit
+      const fileName = `${slug}-${Date.now()}`;
+      const uploadResult = await uploadToImageKit(file, fileName, env);
+      if (!uploadResult.ok) {
+        return jsonResponse({ error: uploadResult.error }, uploadResult.status || 502);
+      }
+
+      url = uploadResult.data.url;
+      fileId = uploadResult.data.fileId;
+      thumbnailUrl = uploadResult.data.thumbnailUrl;
+    } else {
+      return jsonResponse(
+        { error: 'Content-Type must be multipart/form-data or application/json.' },
+        400
+      );
+    }
 
     // Upsert into D1
     const upsertQuery = `
@@ -953,14 +995,14 @@ async function handleAdminUploadTheaterImage(request, env, params) {
       .bind(slug, theaterId, name, url, fileId, thumbnailUrl)
       .run();
 
-    // Clean up old file from ImageKit asynchronously if different
+    // Safely clean up old file if different and not shared by other theaters
     if (oldFileId && oldFileId !== fileId) {
-      deleteFromImageKit(oldFileId, env).catch(() => {});
+      safelyDeleteImageKitFile(oldFileId, slug, env).catch(() => {});
     }
 
     return jsonResponse({
       success: true,
-      message: 'Theater image uploaded and saved successfully.',
+      message: 'Theater image saved successfully.',
       data: {
         slug,
         theater_id: theaterId,
@@ -971,13 +1013,13 @@ async function handleAdminUploadTheaterImage(request, env, params) {
       },
     });
   } catch (err) {
-    return jsonResponse({ error: `Upload handler error: ${err.message}` }, 500);
+    return jsonResponse({ error: `Upload/link handler error: ${err.message}` }, 500);
   }
 }
 
 /**
  * Handler for DELETE /api/admin/theaters/:slug/image
- * Deletes custom theater image from ImageKit and D1.
+ * Deletes custom theater image from D1 and safely cleans up ImageKit file if unreferenced.
  */
 async function handleAdminDeleteTheaterImage(request, env, params) {
   const auth = validateAdminAuth(request, env);
@@ -1003,8 +1045,9 @@ async function handleAdminDeleteTheaterImage(request, env, params) {
       return jsonResponse({ error: `No custom image found for theater "${slug}".` }, 404);
     }
 
+    // Safely delete from ImageKit only if no other theater references this asset
     if (existing.file_id) {
-      await deleteFromImageKit(existing.file_id, env);
+      await safelyDeleteImageKitFile(existing.file_id, slug, env);
     }
 
     await env.DB.prepare('DELETE FROM theater_custom_images WHERE slug = ?').bind(slug).run();

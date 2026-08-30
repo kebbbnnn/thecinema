@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Trash2, Maximize2, MapPin, Loader2, Check, AlertCircle, ImageIcon, RefreshCw, Camera } from 'lucide-react';
+import { Upload, Trash2, Maximize2, MapPin, Loader2, Check, AlertCircle, ImageIcon, RefreshCw, Images } from 'lucide-react';
 
 export function TheaterCard({
   theater,
   onUpload,
+  onOpenLibrary,
   onDelete,
   onPreview,
   isUploading,
@@ -133,12 +134,12 @@ export function TheaterCard({
             {isUploading ? (
               <>
                 <Loader2 size={16} className="spin-animation" />
-                <span>Uploading to ImageKit...</span>
+                <span>Saving to ImageKit...</span>
               </>
             ) : (
               <>
                 {hasCustomImage ? <RefreshCw size={14} /> : <Upload size={14} />}
-                <span>{hasCustomImage ? 'Drop to replace (or click to change)' : 'Drop photo here (or click)'}</span>
+                <span>{hasCustomImage ? 'Drop to replace (or click)' : 'Drop photo here (or click)'}</span>
               </>
             )}
           </div>
@@ -148,45 +149,61 @@ export function TheaterCard({
           {hasCustomImage ? (
             <>
               <button
-                className="btn-card btn-primary"
+                className="btn-card btn-ghost"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
-                title="Change and upload a new photo for this theater"
+                title="Change Photo from Computer"
               >
-                {isUploading ? (
-                  <Loader2 size={14} className="spin-animation" />
-                ) : (
-                  <RefreshCw size={14} />
-                )}
-                <span>Change Photo</span>
+                <RefreshCw size={13} />
+                <span>Upload</span>
+              </button>
+              <button
+                className="btn-card btn-ghost"
+                onClick={() => onOpenLibrary(theater)}
+                disabled={isUploading}
+                title="Pick from Existing Media Library"
+              >
+                <Images size={13} />
+                <span>Library</span>
               </button>
               <button
                 className="btn-card btn-ghost"
                 onClick={() => onPreview(theater.custom_image_url, theater.name)}
                 title="View Full Photo"
+                style={{ flex: '0 0 auto', padding: '0.55rem 0.65rem' }}
               >
-                <Maximize2 size={14} />
-                <span>Preview</span>
+                <Maximize2 size={13} />
               </button>
               <button
                 className="btn-card btn-danger"
                 onClick={handleDelete}
                 disabled={isDeleting || isUploading}
                 title="Delete Custom Image"
-                style={{ flex: '0 0 auto', padding: '0.55rem 0.75rem' }}
+                style={{ flex: '0 0 auto', padding: '0.55rem 0.65rem' }}
               >
-                {isDeleting ? <Loader2 size={14} className="spin-animation" /> : <Trash2 size={14} />}
+                {isDeleting ? <Loader2 size={13} className="spin-animation" /> : <Trash2 size={13} />}
               </button>
             </>
           ) : (
-            <button
-              className="btn-card btn-primary"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-            >
-              {isUploading ? <Loader2 size={14} className="spin-animation" /> : <Upload size={14} />}
-              <span>Upload Photo</span>
-            </button>
+            <>
+              <button
+                className="btn-card btn-primary"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+              >
+                {isUploading ? <Loader2 size={14} className="spin-animation" /> : <Upload size={14} />}
+                <span>Upload</span>
+              </button>
+              <button
+                className="btn-card btn-ghost"
+                onClick={() => onOpenLibrary(theater)}
+                disabled={isUploading}
+                title="Pick from Existing Media Library"
+              >
+                <Images size={14} />
+                <span>Library</span>
+              </button>
+            </>
           )}
         </div>
       </div>

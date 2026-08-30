@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Film, AlertCircle, RefreshCw } from 'lucide-react';
+import { Search, Film, RefreshCw } from 'lucide-react';
 import { Header } from './components/Header';
 import { Metrics } from './components/Metrics';
 import { TheaterCard } from './components/TheaterCard';
 import { ConfigModal } from './components/ConfigModal';
 import { LightboxModal } from './components/LightboxModal';
+import { MediaLibraryModal } from './components/MediaLibraryModal';
 import { ToastContainer } from './components/Toast';
 
 export function App() {
@@ -24,6 +25,8 @@ export function App() {
 
   // Modal / Toast State
   const [previewData, setPreviewData] = useState({ isOpen: false, url: '', title: '' });
+  const [libraryTarget, setLibraryTarget] = useState(null);
+  const [isLinking, setIsLinking] = useState(false);
   const [toasts, setToasts] = useState([]);
 
   const isConnected = Boolean(apiUrl && adminKey);
@@ -91,7 +94,7 @@ export function App() {
     }
   }, [apiUrl, adminKey]);
 
-  // Upload handler
+  // Upload fresh image binary
   const handleUploadImage = async (theater, file) => {
     setUploadingSlug(theater.slug);
     try {
@@ -142,6 +145,61 @@ export function App() {
     }
   };
 
+  // Link existing image from media library
+  const handleLinkImage = async (targetTheater, photoData) => {
+    setIsLinking(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/admin/theaters/${targetTheater.slug}/image`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Key': adminKey,
+        },
+        body: JSON.stringify({
+          image_url: photoData.url,
+          file_id: photoData.fileId,
+          thumbnail_url: photoData.thumbnailUrl,
+          name: targetTheater.name,
+          theater_id: targetTheater.theater_id,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Link failed with status ${res.status}`);
+      }
+
+      showToast(`Photo assigned to ${targetTheater.name}!`, 'success');
+
+      // Optimistically update state
+      setTheaters((prev) =>
+        prev.map((t) =>
+          t.slug === targetTheater.slug
+            ? {
+                ...t,
+                has_custom_image: true,
+                custom_image_url: json.data.image_url,
+                thumbnail_url: json.data.thumbnail_url,
+                file_id: json.data.file_id,
+              }
+            : t
+        )
+      );
+
+      setMetrics((prev) => ({
+        ...prev,
+        with_custom_image: prev.with_custom_image + (targetTheater.has_custom_image ? 0 : 1),
+        missing_image: Math.max(0, prev.missing_image - (targetTheater.has_custom_image ? 0 : 1)),
+      }));
+
+      setLibraryTarget(null);
+    } catch (err) {
+      showToast(`Failed to assign photo: ${err.message}`, 'error');
+    } finally {
+      setIsLinking(false);
+    }
+  };
+
   // Delete handler
   const handleDeleteImage = async (theater) => {
     try {
@@ -183,6 +241,33 @@ export function App() {
       showToast(`Delete error: ${err.message}`, 'error');
     }
   };
+
+  // Group unique custom photos for the Media Library
+  const mediaLibrary = useMemo(() => {
+    const map = new Map();
+    for (const t of theaters) {
+      if (t.has_custom_image && t.custom_image_url) {
+        const key = t.file_id || t.custom_image_url;
+        if (!map.has(key)) {
+          map.set(key, {
+            url: t.custom_image_url,
+            fileId: t.file_id,
+            thumbnailUrl: t.thumbnail_url || t.custom_image_url,
+            usedBy: [t.name],
+            locations: [t.city, t.province].filter(Boolean),
+          });
+        } else {
+          const item = map.get(key);
+          if (!item.usedBy.includes(t.name)) {
+            item.usedBy.push(t.name);
+          }
+          if (t.city && !item.locations.includes(t.city)) item.locations.push(t.city);
+          if (t.province && !item.locations.includes(t.province)) item.locations.push(t.province);
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [theaters]);
 
   // Extract unique provinces for filter dropdown
   const provinces = useMemo(() => {
@@ -296,6 +381,7 @@ export function App() {
                 key={theater.slug}
                 theater={theater}
                 onUpload={handleUploadImage}
+                onOpenLibrary={(t) => setLibraryTarget(t)}
                 onDelete={handleDeleteImage}
                 onPreview={(url, title) => setPreviewData({ isOpen: true, url, title })}
                 isUploading={uploadingSlug === theater.slug}
@@ -329,6 +415,15 @@ export function App() {
         imageUrl={previewData.url}
         title={previewData.title}
         onClose={() => setPreviewData({ isOpen: false, url: '', title: '' })}
+      />
+
+      <MediaLibraryModal
+        isOpen={Boolean(libraryTarget)}
+        targetTheater={libraryTarget}
+        mediaLibrary={mediaLibrary}
+        onSelectPhoto={(photo) => handleLinkImage(libraryTarget, photo)}
+        onClose={() => setLibraryTarget(null)}
+        isLinking={isLinking}
       />
 
       <ToastContainer toasts={toasts} />

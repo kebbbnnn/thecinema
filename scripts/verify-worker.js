@@ -680,6 +680,19 @@ async function testWorker() {
           },
         };
       }
+      if (query.includes('SELECT COUNT(*) as count FROM theater_custom_images')) {
+        return {
+          bind(fileId, slug) {
+            assert.equal(fileId, 'ik_sm_789');
+            assert.equal(slug, 'sm-city-cebu');
+            return {
+              async first() {
+                return { count: 0 }; // Only this theater uses this image
+              },
+            };
+          },
+        };
+      }
       if (query.includes('DELETE FROM theater_custom_images WHERE slug = ?')) {
         return {
           bind(slug) {
@@ -764,6 +777,143 @@ async function testWorker() {
     const scheduleData = await scheduleRes.json();
     assert.equal(scheduleData.theater.image_url, 'https://ik.imagekit.io/thecinema/theaters/custom-test-theater.jpg');
     console.log('✓ GET /api/theater/:slug enriches theater object with custom image_url from D1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 23. Admin endpoint: POST JSON link existing image asset to another theater
+  let jsonLinkUpsertCalled = false;
+  const mockLinkDb = {
+    prepare(query) {
+      if (query.includes('SELECT file_id FROM theater_custom_images')) {
+        return {
+          bind(slug) {
+            return {
+              async first() {
+                return null;
+              },
+            };
+          },
+        };
+      }
+      if (query.includes('INSERT INTO theater_custom_images')) {
+        return {
+          bind(slug, theaterId, name, url, fileId, thumbnailUrl) {
+            assert.equal(slug, 'kcc-marbel');
+            assert.equal(name, 'KCC Marbel');
+            assert.equal(url, 'https://ik.imagekit.io/thecinema/theaters/kcc-gensan.jpg');
+            assert.equal(fileId, 'ik_shared_kcc');
+            assert.equal(thumbnailUrl, 'https://ik.imagekit.io/thecinema/theaters/tr:n-media_library_thumbnail/kcc-gensan.jpg');
+            jsonLinkUpsertCalled = true;
+            return {
+              async run() {
+                return { success: true };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
+  };
+
+  const linkRes = await worker.fetch(
+    new Request('http://localhost/api/admin/theaters/kcc-marbel/image', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Key': 'secret-key-123',
+      },
+      body: JSON.stringify({
+        image_url: 'https://ik.imagekit.io/thecinema/theaters/kcc-gensan.jpg',
+        file_id: 'ik_shared_kcc',
+        thumbnail_url: 'https://ik.imagekit.io/thecinema/theaters/tr:n-media_library_thumbnail/kcc-gensan.jpg',
+        name: 'KCC Marbel',
+        theater_id: 88,
+      }),
+    }),
+    {
+      ADMIN_API_KEY: 'secret-key-123',
+      DB: mockLinkDb,
+    }
+  );
+  assert.equal(linkRes.status, 200);
+  const linkData = await linkRes.json();
+  assert.equal(linkData.success, true);
+  assert.equal(linkData.data.slug, 'kcc-marbel');
+  assert.equal(linkData.data.file_id, 'ik_shared_kcc');
+  assert.ok(jsonLinkUpsertCalled);
+  console.log('✓ POST /api/admin/theaters/:slug/image with JSON links existing asset without re-uploading');
+
+  // 24. Admin endpoint: DELETE shared image does NOT delete file from ImageKit if another theater references it
+  let sharedDeleteFromImageKitCalled = false;
+  let sharedD1DeleteCalled = false;
+  const mockSharedDeleteDb = {
+    prepare(query) {
+      if (query.includes('SELECT file_id FROM theater_custom_images WHERE slug = ?')) {
+        return {
+          bind(slug) {
+            assert.equal(slug, 'kcc-gensan');
+            return {
+              async first() {
+                return { file_id: 'ik_shared_kcc' };
+              },
+            };
+          },
+        };
+      }
+      if (query.includes('SELECT COUNT(*) as count FROM theater_custom_images WHERE file_id = ? AND slug != ?')) {
+        return {
+          bind(fileId, slug) {
+            assert.equal(fileId, 'ik_shared_kcc');
+            assert.equal(slug, 'kcc-gensan');
+            // KCC Marbel is still referencing ik_shared_kcc
+            return {
+              async first() {
+                return { count: 1 };
+              },
+            };
+          },
+        };
+      }
+      if (query.includes('DELETE FROM theater_custom_images WHERE slug = ?')) {
+        return {
+          bind(slug) {
+            assert.equal(slug, 'kcc-gensan');
+            sharedD1DeleteCalled = true;
+            return {
+              async run() {
+                return { success: true };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
+  };
+
+  globalThis.fetch = async () => {
+    sharedDeleteFromImageKitCalled = true;
+    return new Response(null, { status: 204 });
+  };
+
+  try {
+    const sharedDeleteRes = await worker.fetch(
+      new Request('http://localhost/api/admin/theaters/kcc-gensan/image', {
+        method: 'DELETE',
+        headers: { 'X-Admin-Key': 'secret-key-123' },
+      }),
+      {
+        ADMIN_API_KEY: 'secret-key-123',
+        IMAGEKIT_PRIVATE_KEY: 'private_test_key_123',
+        DB: mockSharedDeleteDb,
+      }
+    );
+    assert.equal(sharedDeleteRes.status, 200);
+    assert.equal(sharedDeleteFromImageKitCalled, false); // Crucial: must NOT delete from ImageKit
+    assert.ok(sharedD1DeleteCalled); // D1 row for KCC Gensan IS deleted
+    console.log('✓ DELETE /api/admin/theaters/:slug/image safely preserves shared ImageKit asset when referenced by other theaters');
   } finally {
     globalThis.fetch = originalFetch;
   }
