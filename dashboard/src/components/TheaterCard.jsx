@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Trash2, Maximize2, MapPin, Loader2, Check, AlertCircle, ImageIcon } from 'lucide-react';
+import { Upload, Trash2, Maximize2, MapPin, Loader2, Check, AlertCircle, ImageIcon, RefreshCw, Camera } from 'lucide-react';
 
 export function TheaterCard({
   theater,
@@ -36,6 +36,8 @@ export function TheaterCard({
     if (e.target.files && e.target.files[0]) {
       processFile(e.target.files[0]);
     }
+    // Reset file input value so re-selecting the same file triggers onChange
+    e.target.value = '';
   };
 
   const processFile = (file) => {
@@ -72,7 +74,12 @@ export function TheaterCard({
         style={{ display: 'none' }}
       />
 
-      <div className="theater-media-wrap">
+      <div
+        className="theater-media-wrap"
+        style={{ cursor: 'pointer' }}
+        onClick={() => fileInputRef.current?.click()}
+        title="Click to upload or change photo"
+      >
         {displayImage ? (
           <img
             src={theater.thumbnail_url || displayImage}
@@ -130,16 +137,29 @@ export function TheaterCard({
               </>
             ) : (
               <>
-                <Upload size={15} />
-                <span>{hasCustomImage ? 'Drop to replace photo' : 'Drop photo here (or click)'}</span>
+                {hasCustomImage ? <RefreshCw size={14} /> : <Upload size={14} />}
+                <span>{hasCustomImage ? 'Drop to replace (or click to change)' : 'Drop photo here (or click)'}</span>
               </>
             )}
           </div>
         </div>
 
         <div className="card-actions-row">
-          {hasCustomImage && (
+          {hasCustomImage ? (
             <>
+              <button
+                className="btn-card btn-primary"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                title="Change and upload a new photo for this theater"
+              >
+                {isUploading ? (
+                  <Loader2 size={14} className="spin-animation" />
+                ) : (
+                  <RefreshCw size={14} />
+                )}
+                <span>Change Photo</span>
+              </button>
               <button
                 className="btn-card btn-ghost"
                 onClick={() => onPreview(theater.custom_image_url, theater.name)}
@@ -151,15 +171,14 @@ export function TheaterCard({
               <button
                 className="btn-card btn-danger"
                 onClick={handleDelete}
-                disabled={isDeleting}
+                disabled={isDeleting || isUploading}
                 title="Delete Custom Image"
+                style={{ flex: '0 0 auto', padding: '0.55rem 0.75rem' }}
               >
                 {isDeleting ? <Loader2 size={14} className="spin-animation" /> : <Trash2 size={14} />}
-                <span>Delete</span>
               </button>
             </>
-          )}
-          {!hasCustomImage && (
+          ) : (
             <button
               className="btn-card btn-primary"
               onClick={() => fileInputRef.current?.click()}
