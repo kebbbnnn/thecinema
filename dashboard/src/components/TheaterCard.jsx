@@ -54,7 +54,8 @@ export function TheaterCard({
     onUpload(theater, file);
   };
 
-  const handleDelete = async () => {
+  const handleDelete = async (e) => {
+    if (e) e.stopPropagation();
     if (window.confirm(`Are you sure you want to remove the custom image for ${theater.name}?`)) {
       setIsDeleting(true);
       try {
@@ -78,7 +79,10 @@ export function TheaterCard({
       <div
         className="theater-media-wrap"
         style={{ cursor: 'pointer' }}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={(e) => {
+          e.stopPropagation();
+          fileInputRef.current?.click();
+        }}
         title="Click to upload or change photo"
       >
         {displayImage ? (
@@ -128,7 +132,10 @@ export function TheaterCard({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={(e) => {
+            e.stopPropagation();
+            fileInputRef.current?.click();
+          }}
         >
           <div className="dropzone-label">
             {isUploading ? (
@@ -149,8 +156,12 @@ export function TheaterCard({
           {hasCustomImage ? (
             <>
               <button
+                type="button"
                 className="btn-card btn-ghost"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
                 disabled={isUploading}
                 title="Change Photo from Computer"
               >
@@ -158,8 +169,14 @@ export function TheaterCard({
                 <span>Upload</span>
               </button>
               <button
+                type="button"
                 className="btn-card btn-ghost"
-                onClick={() => onOpenLibrary(theater)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (typeof onOpenLibrary === 'function') {
+                    onOpenLibrary(theater);
+                  }
+                }}
                 disabled={isUploading}
                 title="Pick from Existing Media Library"
               >
@@ -167,14 +184,19 @@ export function TheaterCard({
                 <span>Library</span>
               </button>
               <button
+                type="button"
                 className="btn-card btn-ghost"
-                onClick={() => onPreview(theater.custom_image_url, theater.name)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreview(theater.custom_image_url, theater.name);
+                }}
                 title="View Full Photo"
                 style={{ flex: '0 0 auto', padding: '0.55rem 0.65rem' }}
               >
                 <Maximize2 size={13} />
               </button>
               <button
+                type="button"
                 className="btn-card btn-danger"
                 onClick={handleDelete}
                 disabled={isDeleting || isUploading}
@@ -187,16 +209,26 @@ export function TheaterCard({
           ) : (
             <>
               <button
+                type="button"
                 className="btn-card btn-primary"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
                 disabled={isUploading}
               >
                 {isUploading ? <Loader2 size={14} className="spin-animation" /> : <Upload size={14} />}
                 <span>Upload</span>
               </button>
               <button
+                type="button"
                 className="btn-card btn-ghost"
-                onClick={() => onOpenLibrary(theater)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (typeof onOpenLibrary === 'function') {
+                    onOpenLibrary(theater);
+                  }
+                }}
                 disabled={isUploading}
                 title="Pick from Existing Media Library"
               >

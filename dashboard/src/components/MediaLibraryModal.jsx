@@ -1,32 +1,35 @@
 import React, { useState, useMemo } from 'react';
-import { X, Search, Images, Check, Loader2, Sparkles } from 'lucide-react';
+import { X, Search, Images, Check, Loader2, Sparkles, Building2 } from 'lucide-react';
 
 export function MediaLibraryModal({
   isOpen,
   onClose,
   targetTheater,
-  mediaLibrary,
+  mediaLibrary = [],
   onSelectPhoto,
-  isLinking,
+  isLinking = false,
 }) {
   const [searchQuery, setSearchQuery] = useState('');
 
-  if (!isOpen || !targetTheater) return null;
-
-  // Filter media library items by search query
+  // Filter media library items by search query safely
   const filteredLibrary = useMemo(() => {
-    if (!searchQuery.trim()) return mediaLibrary;
+    const list = Array.isArray(mediaLibrary) ? mediaLibrary : [];
+    if (!searchQuery.trim()) return list;
     const query = searchQuery.toLowerCase();
-    return mediaLibrary.filter((item) => {
-      const matchName = (item.usedBy || []).some((name) =>
-        name.toLowerCase().includes(query)
+    return list.filter((item) => {
+      const usedBy = Array.isArray(item.usedBy) ? item.usedBy : [];
+      const locations = Array.isArray(item.locations) ? item.locations : [];
+      const matchName = usedBy.some((name) =>
+        String(name).toLowerCase().includes(query)
       );
-      const matchLocation = (item.locations || []).some((loc) =>
-        loc.toLowerCase().includes(query)
+      const matchLocation = locations.some((loc) =>
+        String(loc).toLowerCase().includes(query)
       );
       return matchName || matchLocation;
     });
   }, [mediaLibrary, searchQuery]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -37,11 +40,18 @@ export function MediaLibraryModal({
               <Images size={20} style={{ color: 'var(--accent-gold)' }} />
               <span>Media Library</span>
             </div>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-              Assign an existing uploaded photo to <strong style={{ color: 'var(--accent-gold-light)' }}>{targetTheater.name}</strong>
-            </p>
+            {targetTheater ? (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                Assign an existing uploaded photo to <strong style={{ color: 'var(--accent-gold-light)' }}>{targetTheater.name}</strong>
+              </p>
+            ) : (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                Browse all photos currently in use across your cinemas
+              </p>
+            )}
           </div>
           <button
+            type="button"
             className="btn-ghost"
             style={{ padding: '0.4rem', borderRadius: '50%' }}
             onClick={onClose}
@@ -59,6 +69,7 @@ export function MediaLibraryModal({
             placeholder="Filter library by theater name or location..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            autoFocus
           />
         </div>
 
@@ -69,7 +80,7 @@ export function MediaLibraryModal({
               <Images size={36} className="empty-icon" />
               <h4>No photos in Media Library yet</h4>
               <p style={{ fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                Upload your first theater photo, and it will appear here for reuse across branches.
+                Upload your first theater photo, and it will automatically appear here for reuse across branches.
               </p>
             </div>
           ) : filteredLibrary.length === 0 ? (
@@ -82,43 +93,58 @@ export function MediaLibraryModal({
             </div>
           ) : (
             <div className="library-grid">
-              {filteredLibrary.map((item, idx) => (
-                <div key={item.fileId || item.url || idx} className="library-card">
-                  <div className="library-media-wrap">
-                    <img
-                      src={item.thumbnailUrl || item.url}
-                      alt="Uploaded Cinema"
-                      className="library-img"
-                      loading="lazy"
-                    />
-                    <div className="library-used-count">
-                      <Sparkles size={11} />
-                      <span>{item.usedBy.length} theater{item.usedBy.length > 1 ? 's' : ''}</span>
-                    </div>
-                  </div>
+              {filteredLibrary.map((item, idx) => {
+                const usedByList = Array.isArray(item.usedBy) ? item.usedBy : [];
+                const displayThumbnail = item.thumbnailUrl || item.url;
+                const isAlreadyCurrent = targetTheater && targetTheater.custom_image_url === item.url;
 
-                  <div className="library-card-body">
-                    <div className="library-used-by-list" title={item.usedBy.join(', ')}>
-                      <span style={{ color: 'var(--text-muted)' }}>Used by:</span>{' '}
-                      <strong>{item.usedBy.slice(0, 2).join(', ')}{item.usedBy.length > 2 ? ` +${item.usedBy.length - 2} more` : ''}</strong>
+                return (
+                  <div key={item.fileId || item.url || idx} className="library-card">
+                    <div className="library-media-wrap">
+                      <img
+                        src={displayThumbnail}
+                        alt="Uploaded Cinema"
+                        className="library-img"
+                        loading="lazy"
+                      />
+                      <div className="library-used-count">
+                        <Sparkles size={11} />
+                        <span>{usedByList.length} theater{usedByList.length !== 1 ? 's' : ''}</span>
+                      </div>
                     </div>
 
-                    <button
-                      className="btn-card btn-primary"
-                      style={{ width: '100%', marginTop: '0.5rem' }}
-                      onClick={() => onSelectPhoto(item)}
-                      disabled={isLinking}
-                    >
-                      {isLinking ? (
-                        <Loader2 size={14} className="spin-animation" />
-                      ) : (
-                        <Check size={14} />
+                    <div className="library-card-body">
+                      <div className="library-used-by-list" title={usedByList.join(', ')}>
+                        <Building2 size={12} style={{ display: 'inline', marginRight: '3px', verticalAlign: 'middle' }} />
+                        <span style={{ color: 'var(--text-muted)' }}>Used by:</span>{' '}
+                        <strong>
+                          {usedByList.slice(0, 2).join(', ')}
+                          {usedByList.length > 2 ? ` +${usedByList.length - 2} more` : ''}
+                        </strong>
+                      </div>
+
+                      {targetTheater && (
+                        <button
+                          type="button"
+                          className={`btn-card ${isAlreadyCurrent ? 'btn-ghost' : 'btn-primary'}`}
+                          style={{ width: '100%', marginTop: '0.5rem' }}
+                          onClick={() => onSelectPhoto(item)}
+                          disabled={isLinking || isAlreadyCurrent}
+                        >
+                          {isLinking ? (
+                            <Loader2 size={14} className="spin-animation" />
+                          ) : isAlreadyCurrent ? (
+                            <Check size={14} style={{ color: 'var(--accent-emerald)' }} />
+                          ) : (
+                            <Check size={14} />
+                          )}
+                          <span>{isAlreadyCurrent ? 'Current Photo' : 'Use This Photo'}</span>
+                        </button>
                       )}
-                      <span>Use This Photo</span>
-                    </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

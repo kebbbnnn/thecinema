@@ -1,7 +1,14 @@
 import React from 'react';
-import { Film, Key, RefreshCw } from 'lucide-react';
+import { Film, Key, RefreshCw, Images } from 'lucide-react';
 
-export function Header({ isConnected, onOpenConfig, onRefresh, isRefreshing }) {
+export function Header({
+  isConnected,
+  onOpenConfig,
+  onRefresh,
+  isRefreshing,
+  onOpenLibrary,
+  libraryCount = 0,
+}) {
   return (
     <header className="app-header">
       <div className="header-inner">
@@ -17,6 +24,17 @@ export function Header({ isConnected, onOpenConfig, onRefresh, isRefreshing }) {
 
         <div className="header-actions">
           <button
+            type="button"
+            className="btn-header"
+            onClick={onOpenLibrary}
+            title="Browse all distinct photos in your Media Library"
+          >
+            <Images size={16} />
+            <span>Library ({libraryCount})</span>
+          </button>
+
+          <button
+            type="button"
             className="btn-header"
             onClick={onRefresh}
             disabled={isRefreshing}
@@ -26,7 +44,7 @@ export function Header({ isConnected, onOpenConfig, onRefresh, isRefreshing }) {
             <span>Refresh</span>
           </button>
 
-          <button className="btn-header" onClick={onOpenConfig}>
+          <button type="button" className="btn-header" onClick={onOpenConfig}>
             <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
             <Key size={15} />
             <span>{isConnected ? 'Connected' : 'Configure API'}</span>

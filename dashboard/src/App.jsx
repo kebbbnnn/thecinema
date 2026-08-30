@@ -26,6 +26,7 @@ export function App() {
   // Modal / Toast State
   const [previewData, setPreviewData] = useState({ isOpen: false, url: '', title: '' });
   const [libraryTarget, setLibraryTarget] = useState(null);
+  const [isGlobalLibraryOpen, setIsGlobalLibraryOpen] = useState(false);
   const [isLinking, setIsLinking] = useState(false);
   const [toasts, setToasts] = useState([]);
 
@@ -147,6 +148,7 @@ export function App() {
 
   // Link existing image from media library
   const handleLinkImage = async (targetTheater, photoData) => {
+    if (!targetTheater) return;
     setIsLinking(true);
     try {
       const res = await fetch(`${apiUrl}/api/admin/theaters/${targetTheater.slug}/image`, {
@@ -193,6 +195,7 @@ export function App() {
       }));
 
       setLibraryTarget(null);
+      setIsGlobalLibraryOpen(false);
     } catch (err) {
       showToast(`Failed to assign photo: ${err.message}`, 'error');
     } finally {
@@ -245,7 +248,7 @@ export function App() {
   // Group unique custom photos for the Media Library
   const mediaLibrary = useMemo(() => {
     const map = new Map();
-    for (const t of theaters) {
+    for (const t of (theaters || [])) {
       if (t.has_custom_image && t.custom_image_url) {
         const key = t.file_id || t.custom_image_url;
         if (!map.has(key)) {
@@ -272,7 +275,7 @@ export function App() {
   // Extract unique provinces for filter dropdown
   const provinces = useMemo(() => {
     const set = new Set();
-    for (const t of theaters) {
+    for (const t of (theaters || [])) {
       if (t.province) set.add(t.province);
     }
     return Array.from(set).sort();
@@ -280,7 +283,7 @@ export function App() {
 
   // Filtered theaters list
   const filteredTheaters = useMemo(() => {
-    return theaters.filter((theater) => {
+    return (theaters || []).filter((theater) => {
       // 1. Status Filter
       if (statusFilter === 'missing' && theater.has_custom_image) return false;
       if (statusFilter === 'has_image' && !theater.has_custom_image) return false;
@@ -308,6 +311,8 @@ export function App() {
         onOpenConfig={() => setIsConfigOpen(true)}
         onRefresh={fetchTheaters}
         isRefreshing={isLoading}
+        onOpenLibrary={() => setIsGlobalLibraryOpen(true)}
+        libraryCount={mediaLibrary.length}
       />
 
       <main className="main-content">
@@ -333,18 +338,21 @@ export function App() {
           <div className="filters-group">
             <div style={{ display: 'flex', gap: '0.35rem' }}>
               <button
+                type="button"
                 className={`tab-pill ${statusFilter === 'missing' ? 'active' : ''}`}
                 onClick={() => setStatusFilter('missing')}
               >
                 Missing Image ({metrics.missing_image})
               </button>
               <button
+                type="button"
                 className={`tab-pill ${statusFilter === 'has_image' ? 'active' : ''}`}
                 onClick={() => setStatusFilter('has_image')}
               >
                 Has Photo ({metrics.with_custom_image})
               </button>
               <button
+                type="button"
                 className={`tab-pill ${statusFilter === 'all' ? 'active' : ''}`}
                 onClick={() => setStatusFilter('all')}
               >
@@ -418,11 +426,18 @@ export function App() {
       />
 
       <MediaLibraryModal
-        isOpen={Boolean(libraryTarget)}
+        isOpen={Boolean(libraryTarget) || isGlobalLibraryOpen}
         targetTheater={libraryTarget}
         mediaLibrary={mediaLibrary}
-        onSelectPhoto={(photo) => handleLinkImage(libraryTarget, photo)}
-        onClose={() => setLibraryTarget(null)}
+        onSelectPhoto={(photo) => {
+          if (libraryTarget) {
+            handleLinkImage(libraryTarget, photo);
+          }
+        }}
+        onClose={() => {
+          setLibraryTarget(null);
+          setIsGlobalLibraryOpen(false);
+        }}
         isLinking={isLinking}
       />
 
