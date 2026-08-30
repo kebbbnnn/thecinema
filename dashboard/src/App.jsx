@@ -249,19 +249,19 @@ export function App() {
   const mediaLibrary = useMemo(() => {
     const map = new Map();
     for (const t of (theaters || [])) {
-      if (t.has_custom_image && t.custom_image_url) {
+      if (t && t.has_custom_image && t.custom_image_url) {
         const key = t.file_id || t.custom_image_url;
         if (!map.has(key)) {
           map.set(key, {
             url: t.custom_image_url,
-            fileId: t.file_id,
+            fileId: t.file_id || null,
             thumbnailUrl: t.thumbnail_url || t.custom_image_url,
-            usedBy: [t.name],
+            usedBy: t.name ? [t.name] : [],
             locations: [t.city, t.province].filter(Boolean),
           });
         } else {
           const item = map.get(key);
-          if (!item.usedBy.includes(t.name)) {
+          if (t.name && !item.usedBy.includes(t.name)) {
             item.usedBy.push(t.name);
           }
           if (t.city && !item.locations.includes(t.city)) item.locations.push(t.city);
